@@ -1,0 +1,17 @@
+{
+    "config": {
+      "step": {
+        "user": {
+          "title": "Configure Dynamic Energy Cost",
+          "description": "Select your energy (kWh) and price sensors, and choose which accumulation periods to track.",
+          "data": {
+            "energy_sensor": "Energy Sensor (kWh)",
+            "price_sensor": "Price Sensor",
+            "period_hourly": "Create Hourly Cost Sensor",
+            "period_daily": "Create Daily Cost Sensor",
+            "period_monthly": "Create Monthly Cost Sensor"
+          }
+        }
+      }
+    }
+  }

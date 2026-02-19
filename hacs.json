@@ -1,0 +1,6 @@
+{
+    "name": "Dynamic Energy Cost",
+    "iot_class": "Local Polling",
+    "render_readme": true,
+    "hacs": "1.19.0"
+  }
