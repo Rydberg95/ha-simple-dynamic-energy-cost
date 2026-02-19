@@ -1,6 +1,5 @@
 import logging
-from homeassistant.components.sensor import SensorStateClass
-from homeassistant.components.sensor.restore_sensor import RestoreSensor
+from homeassistant.components.sensor import SensorStateClass, RestoreSensor
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
