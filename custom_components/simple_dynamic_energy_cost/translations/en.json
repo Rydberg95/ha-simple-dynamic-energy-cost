@@ -9,9 +9,10 @@
             "price_sensor": "Price Sensor",
             "period_hourly": "Create Hourly Cost Sensor",
             "period_daily": "Create Daily Cost Sensor",
-            "period_monthly": "Create Monthly Cost Sensor"
+            "period_monthly": "Create Monthly Cost Sensor",
+            "period_yearly": "Create Yearly Cost Sensor"
           }
         }
       }
     }
-  }
+}

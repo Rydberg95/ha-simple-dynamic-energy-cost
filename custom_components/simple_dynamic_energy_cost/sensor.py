@@ -12,6 +12,7 @@ from .const import (
     CONF_PERIOD_HOURLY,
     CONF_PERIOD_DAILY,
     CONF_PERIOD_MONTHLY,
+    CONF_PERIOD_YEARLY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -23,6 +24,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     
     sensors = []
     
+    sensors.append(DynamicCostSensor(hass, entry.entry_id, "Accumulated", energy_sensor_id, price_sensor_id))
+    
     if entry.data.get(CONF_PERIOD_HOURLY):
         sensors.append(DynamicCostSensor(hass, entry.entry_id, "Hourly", energy_sensor_id, price_sensor_id))
         
@@ -32,6 +35,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     if entry.data.get(CONF_PERIOD_MONTHLY):
         sensors.append(DynamicCostSensor(hass, entry.entry_id, "Monthly", energy_sensor_id, price_sensor_id))
 
+    if entry.data.get(CONF_PERIOD_YEARLY):
+        sensors.append(DynamicCostSensor(hass, entry.entry_id, "Yearly", energy_sensor_id, price_sensor_id))
+
     async_add_entities(sensors)
 
 
@@ -39,7 +45,7 @@ class DynamicCostSensor(RestoreSensor):
     """Representation of a Dynamic Cost Sensor."""
 
     _attr_state_class = SensorStateClass.TOTAL
-    _attr_icon = "mdi:currency-usd" # You can adjust this or make it dynamic
+    _attr_icon = "mdi:currency-usd"
     _attr_should_poll = False
 
     def __init__(self, hass, entry_id, period, energy_sensor_id, price_sensor_id):
@@ -49,8 +55,10 @@ class DynamicCostSensor(RestoreSensor):
         self._energy_sensor_id = energy_sensor_id
         self._price_sensor_id = price_sensor_id
         
-        self._attr_name = f"Dynamic Cost {period}"
-        self._attr_unique_id = f"{entry_id}_{period.lower()}"
+        source_name = energy_sensor_id.split(".")[-1].replace("_", " ").title()
+        
+        self._attr_name = f"{source_name} Cost {period}"
+        self._attr_unique_id = f"{entry_id}_{energy_sensor_id.replace('.', '_')}_{period.lower()}"
         self._state = 0.0
 
     @property
@@ -82,13 +90,15 @@ class DynamicCostSensor(RestoreSensor):
             )
         )
 
-        # Set up reset timers based on period
+        # Set up reset timers based on period (Accumulated is left without a reset timer)
         if self._period == "Hourly":
             self.async_on_remove(async_track_time_change(self.hass, self._reset, minute=0, second=0))
         elif self._period == "Daily":
             self.async_on_remove(async_track_time_change(self.hass, self._reset, hour=0, minute=0, second=0))
         elif self._period == "Monthly":
             self.async_on_remove(async_track_time_change(self.hass, self._monthly_reset, hour=0, minute=0, second=0))
+        elif self._period == "Yearly":
+            self.async_on_remove(async_track_time_change(self.hass, self._yearly_reset, hour=0, minute=0, second=0))
 
     @callback
     def _energy_state_changed(self, event):
@@ -140,4 +150,10 @@ class DynamicCostSensor(RestoreSensor):
     def _monthly_reset(self, time):
         """Reset the sensor state if it is the first day of the month."""
         if time.day == 1:
+            self._reset(time)
+            
+    @callback
+    def _yearly_reset(self, time):
+        """Reset the sensor state if it is the first day of the year."""
+        if time.month == 1 and time.day == 1:
             self._reset(time)

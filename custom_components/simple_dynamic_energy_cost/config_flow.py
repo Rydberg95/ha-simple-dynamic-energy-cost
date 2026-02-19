@@ -8,6 +8,7 @@ from .const import (
     CONF_PERIOD_HOURLY,
     CONF_PERIOD_DAILY,
     CONF_PERIOD_MONTHLY,
+    CONF_PERIOD_YEARLY,
 )
 
 class DynamicEnergyCostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -33,6 +34,7 @@ class DynamicEnergyCostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_PERIOD_HOURLY, default=False): bool,
                 vol.Optional(CONF_PERIOD_DAILY, default=True): bool,
                 vol.Optional(CONF_PERIOD_MONTHLY, default=True): bool,
+                vol.Optional(CONF_PERIOD_YEARLY, default=False): bool,
             }
         )
 
