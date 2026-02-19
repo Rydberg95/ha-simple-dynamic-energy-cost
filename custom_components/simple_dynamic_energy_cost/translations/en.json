@@ -7,11 +7,14 @@
           "data": {
             "energy_sensor": "Energy Sensor (kWh)",
             "price_sensor": "Price Sensor",
-            "fixed_addition": "Fixed Grid Fee / Price Addition (per kWh)",
+            "fixed_addition": "Fixed Price Addition (Grid Fee / Tax)",
             "period_hourly": "Create Hourly Cost Sensor",
             "period_daily": "Create Daily Cost Sensor",
             "period_monthly": "Create Monthly Cost Sensor",
             "period_yearly": "Create Yearly Cost Sensor"
+          },
+          "data_description": {
+            "fixed_addition": "A fixed amount added to the price per kWh to account for grid fees, transfer costs, or taxes. Enter this value in the exact same currency as your price sensor (e.g., if your price sensor is in SEK/kWh, input 0.52 for a 52 öre grid fee)."
           }
         }
       }
