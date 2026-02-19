@@ -1,0 +1,11 @@
+{
+  "domain": "simple_dynamic_energy_cost",
+  "name": "Simple Dynamic Energy Cost Calculator",
+  "codeowners": ["@Rydberg95"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/Rydberg95/ha-simple-dynamic-energy-cost",
+  "iot_class": "local_polling",
+  "requirements": [],
+  "version": "1.0.0"
+}
