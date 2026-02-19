@@ -1,5 +1,6 @@
 import logging
 from homeassistant.components.sensor import SensorStateClass, RestoreSensor
+from homeassistant.helpers import entity_platform
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
@@ -44,6 +45,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     if entry.data.get(CONF_PERIOD_YEARLY):
         sensors.append(DynamicCostSensor(hass, entry.entry_id, "Yearly", energy_sensor_id, price_sensor_id, fixed_addition))
+
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service(
+        "reset",
+        {},
+        "async_reset",
+    )
 
     async_add_entities(sensors)
 
@@ -108,6 +116,11 @@ class DynamicCostSensor(RestoreSensor):
         elif self._period == "Yearly":
             self.async_on_remove(async_track_time_change(self.hass, self._yearly_reset, hour=0, minute=0, second=0))
 
+    async def async_reset(self):
+        """Manually reset the sensor state to zero."""
+        self._state = 0.0
+        self.async_write_ha_state()
+        
     @callback
     def _energy_state_changed(self, event):
         """Handle energy sensor state changes."""
