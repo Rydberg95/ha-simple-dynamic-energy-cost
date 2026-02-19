@@ -1,5 +1,5 @@
 import logging
-from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.components.sensor import SensorStateClass
 from homeassistant.components.sensor.restore_sensor import RestoreSensor
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
 from homeassistant.core import HomeAssistant, callback
@@ -36,7 +36,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     async_add_entities(sensors)
 
 
-class DynamicCostSensor(RestoreSensor, SensorEntity):
+class DynamicCostSensor(RestoreSensor):
     """Representation of a Dynamic Cost Sensor."""
 
     _attr_state_class = SensorStateClass.TOTAL
@@ -79,20 +79,20 @@ class DynamicCostSensor(RestoreSensor, SensorEntity):
         # Listen for energy sensor changes
         self.async_on_remove(
             async_track_state_change_event(
-                self.hass, [self._energy_sensor_id], self._async_energy_state_changed
+                self.hass, [self._energy_sensor_id], self._energy_state_changed
             )
         )
 
         # Set up reset timers based on period
         if self._period == "Hourly":
-            self.async_on_remove(async_track_time_change(self.hass, self._async_reset, minute=0, second=0))
+            self.async_on_remove(async_track_time_change(self.hass, self._reset, minute=0, second=0))
         elif self._period == "Daily":
-            self.async_on_remove(async_track_time_change(self.hass, self._async_reset, hour=0, minute=0, second=0))
+            self.async_on_remove(async_track_time_change(self.hass, self._reset, hour=0, minute=0, second=0))
         elif self._period == "Monthly":
-            self.async_on_remove(async_track_time_change(self.hass, self._async_monthly_reset, hour=0, minute=0, second=0))
+            self.async_on_remove(async_track_time_change(self.hass, self._monthly_reset, hour=0, minute=0, second=0))
 
     @callback
-    async def _async_energy_state_changed(self, event):
+    def _energy_state_changed(self, event):
         """Handle energy sensor state changes."""
         old_state = event.data.get("old_state")
         new_state = event.data.get("new_state")
@@ -132,13 +132,13 @@ class DynamicCostSensor(RestoreSensor, SensorEntity):
         self.async_write_ha_state()
 
     @callback
-    async def _async_reset(self, time):
+    def _reset(self, time):
         """Reset the sensor state to zero."""
         self._state = 0.0
         self.async_write_ha_state()
 
     @callback
-    async def _async_monthly_reset(self, time):
+    def _monthly_reset(self, time):
         """Reset the sensor state if it is the first day of the month."""
         if time.day == 1:
-            await self._async_reset(time)
+            self._reset(time)
