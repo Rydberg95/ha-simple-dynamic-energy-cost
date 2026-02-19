@@ -1,4 +1,4 @@
-DOMAIN = "dynamic_energy_cost"
+DOMAIN = "simple_dynamic_energy_cost"
 
 CONF_PRICE_SENSOR = "price_sensor"
 CONF_ENERGY_SENSOR = "energy_sensor"
