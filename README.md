@@ -1,4 +1,4 @@
-# Dynamic Energy Cost
+# Simple Dynamic Energy Cost
 
 A Home Assistant custom component that calculates the accumulated cost of a device based on its energy consumption (kWh) and a dynamic electricity price sensor (like Nordpool).
 
