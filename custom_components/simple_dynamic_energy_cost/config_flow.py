@@ -1,5 +1,6 @@
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.core import callback
 from homeassistant.helpers import selector
 from .const import (
     DOMAIN,
@@ -14,6 +15,12 @@ from .const import (
 
 class DynamicEnergyCostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry):
+        """Get the options flow for this handler."""
+        return DynamicEnergyCostOptionsFlowHandler(config_entry)
 
     async def async_step_user(self, user_input=None):
         errors = {}
@@ -42,4 +49,33 @@ class DynamicEnergyCostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user", data_schema=data_schema, errors=errors
+        )
+
+class DynamicEnergyCostOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle an options flow for Dynamic Energy Cost."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(self, user_input=None):
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        # Retrieve the current value, prioritizing the options dictionary over the initial data
+        current_fixed_addition = self.config_entry.options.get(
+            CONF_FIXED_ADDITION, 
+            self.config_entry.data.get(CONF_FIXED_ADDITION, 0.0)
+        )
+
+        options_schema = vol.Schema(
+            {
+                vol.Optional(CONF_FIXED_ADDITION, default=current_fixed_addition): vol.Coerce(float),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=options_schema
         )

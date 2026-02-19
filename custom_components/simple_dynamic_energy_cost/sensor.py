@@ -22,7 +22,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     """Set up the sensor platform."""
     energy_sensor_id = entry.data[CONF_ENERGY_SENSOR]
     price_sensor_id = entry.data[CONF_PRICE_SENSOR]
-    fixed_addition = entry.data.get(CONF_FIXED_ADDITION, 0.0)
+    
+    # Fetch from options first, fallback to initial setup data
+    fixed_addition = entry.options.get(
+        CONF_FIXED_ADDITION, 
+        entry.data.get(CONF_FIXED_ADDITION, 0.0)
+    )
     
     sensors = []
     
