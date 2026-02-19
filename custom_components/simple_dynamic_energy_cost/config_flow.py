@@ -56,17 +56,16 @@ class DynamicEnergyCostOptionsFlowHandler(config_entries.OptionsFlow):
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize options flow."""
-        self.config_entry = config_entry
+        self._config_entry = config_entry
 
     async def async_step_init(self, user_input=None):
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        # Retrieve the current value, prioritizing the options dictionary over the initial data
-        current_fixed_addition = self.config_entry.options.get(
+        current_fixed_addition = self._config_entry.options.get(
             CONF_FIXED_ADDITION, 
-            self.config_entry.data.get(CONF_FIXED_ADDITION, 0.0)
+            self._config_entry.data.get(CONF_FIXED_ADDITION, 0.0)
         )
 
         options_schema = vol.Schema(
