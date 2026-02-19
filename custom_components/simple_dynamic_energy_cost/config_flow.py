@@ -9,6 +9,7 @@ from .const import (
     CONF_PERIOD_DAILY,
     CONF_PERIOD_MONTHLY,
     CONF_PERIOD_YEARLY,
+    CONF_FIXED_ADDITION,
 )
 
 class DynamicEnergyCostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -31,6 +32,7 @@ class DynamicEnergyCostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_PRICE_SENSOR): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor")
                 ),
+                vol.Optional(CONF_FIXED_ADDITION, default=0.0): vol.Coerce(float),
                 vol.Optional(CONF_PERIOD_HOURLY, default=False): bool,
                 vol.Optional(CONF_PERIOD_DAILY, default=True): bool,
                 vol.Optional(CONF_PERIOD_MONTHLY, default=True): bool,

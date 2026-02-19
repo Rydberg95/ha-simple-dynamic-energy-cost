@@ -13,6 +13,7 @@ from .const import (
     CONF_PERIOD_DAILY,
     CONF_PERIOD_MONTHLY,
     CONF_PERIOD_YEARLY,
+    CONF_FIXED_ADDITION,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -21,22 +22,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     """Set up the sensor platform."""
     energy_sensor_id = entry.data[CONF_ENERGY_SENSOR]
     price_sensor_id = entry.data[CONF_PRICE_SENSOR]
+    fixed_addition = entry.data.get(CONF_FIXED_ADDITION, 0.0)
     
     sensors = []
     
-    sensors.append(DynamicCostSensor(hass, entry.entry_id, "Accumulated", energy_sensor_id, price_sensor_id))
+    sensors.append(DynamicCostSensor(hass, entry.entry_id, "Accumulated", energy_sensor_id, price_sensor_id, fixed_addition))
     
     if entry.data.get(CONF_PERIOD_HOURLY):
-        sensors.append(DynamicCostSensor(hass, entry.entry_id, "Hourly", energy_sensor_id, price_sensor_id))
+        sensors.append(DynamicCostSensor(hass, entry.entry_id, "Hourly", energy_sensor_id, price_sensor_id, fixed_addition))
         
     if entry.data.get(CONF_PERIOD_DAILY):
-        sensors.append(DynamicCostSensor(hass, entry.entry_id, "Daily", energy_sensor_id, price_sensor_id))
+        sensors.append(DynamicCostSensor(hass, entry.entry_id, "Daily", energy_sensor_id, price_sensor_id, fixed_addition))
         
     if entry.data.get(CONF_PERIOD_MONTHLY):
-        sensors.append(DynamicCostSensor(hass, entry.entry_id, "Monthly", energy_sensor_id, price_sensor_id))
+        sensors.append(DynamicCostSensor(hass, entry.entry_id, "Monthly", energy_sensor_id, price_sensor_id, fixed_addition))
 
     if entry.data.get(CONF_PERIOD_YEARLY):
-        sensors.append(DynamicCostSensor(hass, entry.entry_id, "Yearly", energy_sensor_id, price_sensor_id))
+        sensors.append(DynamicCostSensor(hass, entry.entry_id, "Yearly", energy_sensor_id, price_sensor_id, fixed_addition))
 
     async_add_entities(sensors)
 
@@ -48,12 +50,13 @@ class DynamicCostSensor(RestoreSensor):
     _attr_icon = "mdi:currency-usd"
     _attr_should_poll = False
 
-    def __init__(self, hass, entry_id, period, energy_sensor_id, price_sensor_id):
+    def __init__(self, hass, entry_id, period, energy_sensor_id, price_sensor_id, fixed_addition):
         """Initialize the sensor."""
         self.hass = hass
         self._period = period
         self._energy_sensor_id = energy_sensor_id
         self._price_sensor_id = price_sensor_id
+        self._fixed_addition = fixed_addition
         
         source_name = energy_sensor_id.split(".")[-1].replace("_", " ").title()
         
@@ -136,7 +139,7 @@ class DynamicCostSensor(RestoreSensor):
             return
 
         # Calculate cost and add to total
-        cost_delta = energy_delta * current_price
+        cost_delta = energy_delta * (current_price + self._fixed_addition)
         self._state += cost_delta
         self.async_write_ha_state()
 

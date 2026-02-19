@@ -7,6 +7,7 @@
           "data": {
             "energy_sensor": "Energy Sensor (kWh)",
             "price_sensor": "Price Sensor",
+            "fixed_addition": "Fixed Grid Fee / Price Addition (per kWh)",
             "period_hourly": "Create Hourly Cost Sensor",
             "period_daily": "Create Daily Cost Sensor",
             "period_monthly": "Create Monthly Cost Sensor",
