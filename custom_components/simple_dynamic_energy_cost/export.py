@@ -89,13 +89,13 @@ async def _reconstruct(
     start_dt: datetime,
     end_dt: datetime,
 ) -> dict:
-    energy_states = await history.async_get_significant_states(
-        hass, start_dt, end_dt, [energy_sensor_id]
+    energy_states = await hass.async_add_executor_job(
+        history.get_significant_states, hass, start_dt, end_dt, [energy_sensor_id]
     )
     energy_list = energy_states.get(energy_sensor_id, []) if energy_states else []
 
-    price_states = await history.async_get_significant_states(
-        hass, start_dt, end_dt, [price_sensor_id]
+    price_states = await hass.async_add_executor_job(
+        history.get_significant_states, hass, start_dt, end_dt, [price_sensor_id]
     )
     price_list = price_states.get(price_sensor_id, []) if price_states else []
     price_timeline = _build_price_timeline(price_list)
