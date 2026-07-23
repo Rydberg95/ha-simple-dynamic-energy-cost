@@ -54,6 +54,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     last_export.bind(price_sensor_id, fixed_addition)
     sensors.append(last_export)
 
+    hass.data[DOMAIN][entry.entry_id]["last_export"] = last_export
+
     platform = entity_platform.async_get_current_platform()
     platform.async_register_entity_service(
         "reset",
@@ -281,6 +283,10 @@ class LastExportSensor(RestoreSensor):
             start_date,
             fmt,
         )
+        self.apply_export_result(result)
+
+    def apply_export_result(self, result: dict) -> None:
+        """Update sensor state/attributes from an export result."""
         summary = result["summary"]
         files = result["files"]
         attrs = dict(self._attr_extra_state_attributes)
