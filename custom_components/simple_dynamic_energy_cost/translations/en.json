@@ -47,5 +47,15 @@
         }
       }
     }
+  },
+  "entity": {
+    "button": {
+      "export_month": {
+        "name": "Export Month",
+        "state": {
+          "_": "Export"
+        }
+      }
+    }
   }
 }

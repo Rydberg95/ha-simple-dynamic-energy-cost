@@ -15,10 +15,11 @@ custom_components/simple_dynamic_energy_cost/
   const.py           # DOMAIN, CONF_*, and service/attribute constants — single source of truth
   sensor.py          # DynamicCostSensor (RestoreSensor), state tracking + resets;
                      # LastExportSensor (bookkeeping report link); entity services reset + export_month
+  button.py          # ExportMonthButton — one-click export of last completed month
   export.py          # Monthly bookkeeping: HA storage persistence, recorder reconstruction,
                      # CSV + PDF writers (fpdf2), file output to www/
   manifest.json      # HA integration metadata (domain, version, iot_class, requirements)
-  translations/en.json  # UI strings for config/options steps + services
+  translations/en.json  # UI strings for config/options steps + services + button entity
 hacs.json            # HACS metadata
 README.md            # User-facing docs
 ```
