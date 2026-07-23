@@ -7,3 +7,9 @@ CONF_PERIOD_DAILY = "period_daily"
 CONF_PERIOD_MONTHLY = "period_monthly"
 CONF_PERIOD_YEARLY = "period_yearly"
 CONF_FIXED_ADDITION = "fixed_addition"
+
+SERVICE_EXPORT_MONTH = "export_month"
+ATTR_START_DATE = "start_date"
+ATTR_END_DATE = "end_date"
+
+MONTHLY_SUMMARIES_KEY = "monthly_summaries"

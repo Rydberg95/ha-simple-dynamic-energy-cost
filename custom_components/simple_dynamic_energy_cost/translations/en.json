@@ -31,5 +31,21 @@
         }
       }
     }
+  },
+  "services": {
+    "export_month": {
+      "name": "Export month report",
+      "description": "Exports a monthly bookkeeping report (CSV + PDF) to the www/ folder with a downloadable link.",
+      "fields": {
+        "start_date": {
+          "name": "Start date",
+          "description": "Any date within the month to export, e.g. \"2026-06-01\" or \"2026-06-15\". The whole month is exported."
+        },
+        "format": {
+          "name": "Format",
+          "description": "File format to export: \"csv\", \"pdf\", or \"both\" (default)."
+        }
+      }
+    }
   }
 }
