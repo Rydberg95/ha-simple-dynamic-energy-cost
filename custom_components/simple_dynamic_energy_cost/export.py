@@ -81,6 +81,62 @@ def _price_at(timeline, when) -> float | None:
     return result
 
 
+def _segment_cost(
+    energy_delta: float,
+    interval_start: datetime,
+    interval_end: datetime,
+    price_timeline: list[tuple[datetime, float]],
+    fixed_addition: float,
+) -> tuple[float, float, float] | None:
+    """Apportion energy_delta over [interval_start, interval_end] split by price changes.
+
+    Energy is assumed uniformly consumed over the interval. The price effective
+    for a sub-interval is the last known price at its start (from price_timeline);
+    if none is known, the sub-interval is dropped entirely (matching the live
+    sensor's behavior when no price has ever been seen).
+
+    Returns (energy, spot, fixed) contributions, or None if no pricing is
+    available for any part of the interval.
+    """
+    total_seconds = (interval_end - interval_start).total_seconds()
+    if total_seconds <= 0:
+        price = _price_at(price_timeline, interval_end)
+        if price is None:
+            return None
+        return (energy_delta, energy_delta * price, energy_delta * fixed_addition)
+
+    # Collect price changes that fall strictly inside the interval; each marks
+    # a boundary. The price for a sub-interval starting at boundary ts is the
+    # last known price at ts (i.e. the price set at ts if it's a change, or the
+    # most recent prior price otherwise).
+    boundaries = [interval_start]
+    for ts, _price in price_timeline:
+        if interval_start < ts < interval_end:
+            boundaries.append(ts)
+    boundaries.append(interval_end)
+
+    energy = 0.0
+    spot = 0.0
+    fixed = 0.0
+    for i in range(1, len(boundaries)):
+        seg_start = boundaries[i - 1]
+        seg_end = boundaries[i]
+        seg_seconds = (seg_end - seg_start).total_seconds()
+        if seg_seconds <= 0:
+            continue
+        price = _price_at(price_timeline, seg_start)
+        if price is None:
+            continue
+        seg_energy = energy_delta * (seg_seconds / total_seconds)
+        energy += seg_energy
+        spot += seg_energy * price
+        fixed += seg_energy * fixed_addition
+
+    if energy == 0.0:
+        return None
+    return (energy, spot, fixed)
+
+
 async def _reconstruct(
     hass: HomeAssistant,
     energy_sensor_id: str,
@@ -102,6 +158,7 @@ async def _reconstruct(
 
     total_energy = 0.0
     total_spot = 0.0
+    total_fixed = 0.0
 
     for i in range(1, len(energy_list)):
         old_val = _to_float(energy_list[i - 1].state)
@@ -114,12 +171,19 @@ async def _reconstruct(
             delta = new_val
         if delta <= 0:
             continue
-        total_energy += delta
-        price = _price_at(price_timeline, energy_list[i].last_updated)
-        if price is not None:
-            total_spot += delta * price
+        result = _segment_cost(
+            delta,
+            energy_list[i - 1].last_updated,
+            energy_list[i].last_updated,
+            price_timeline,
+            fixed_addition,
+        )
+        if result is None:
+            continue
+        total_energy += result[0]
+        total_spot += result[1]
+        total_fixed += result[2]
 
-    total_fixed = total_energy * fixed_addition
     total = total_spot + total_fixed
 
     return {

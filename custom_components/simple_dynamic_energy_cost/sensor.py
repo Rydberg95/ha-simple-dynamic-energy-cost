@@ -93,12 +93,15 @@ class DynamicCostSensor(RestoreSensor):
         self._price_sensor_id = price_sensor_id
         self._fixed_addition = fixed_addition
         self._entry_id = entry_id
-        
+
         source_name = energy_sensor_id.split(".")[-1].replace("_", " ").title()
-        
+
         self._attr_name = f"{source_name} Cost {period}"
         self._attr_unique_id = f"{entry_id}_{energy_sensor_id.replace('.', '_')}_{period.lower()}"
         self._state = 0.0
+        self._last_known_price = None
+        self._last_energy_ts = None
+        self._price_changes = []
 
     @property
     def native_value(self):
@@ -113,7 +116,7 @@ class DynamicCostSensor(RestoreSensor):
     async def async_added_to_hass(self):
         """Handle entity which will be added."""
         await super().async_added_to_hass()
-        
+
         # Restore previous state
         state = await self.async_get_last_sensor_data()
         if state and state.native_value is not None:
@@ -122,10 +125,26 @@ class DynamicCostSensor(RestoreSensor):
             except ValueError:
                 self._state = 0.0
 
+        # Seed last-known price from the current price sensor state, if any
+        price_state = self.hass.states.get(self._price_sensor_id)
+        if price_state is not None and price_state.state not in ("unknown", "unavailable"):
+            try:
+                self._last_known_price = float(price_state.state)
+            except ValueError:
+                self._last_known_price = None
+
         # Listen for energy sensor changes
         self.async_on_remove(
             async_track_state_change_event(
                 self.hass, [self._energy_sensor_id], self._energy_state_changed
+            )
+        )
+
+        # Track price sensor changes to keep last-known price fresh and to
+        # record price-change timestamps for interval splitting.
+        self.async_on_remove(
+            async_track_state_change_event(
+                self.hass, [self._price_sensor_id], self._price_state_changed
             )
         )
 
@@ -143,7 +162,20 @@ class DynamicCostSensor(RestoreSensor):
         """Manually reset the sensor state to zero."""
         self._state = 0.0
         self.async_write_ha_state()
-        
+
+    @callback
+    def _price_state_changed(self, event):
+        """Track price sensor updates to keep last-known price and record change times."""
+        new_state = event.data.get("new_state")
+        if new_state is None or new_state.state in ("unknown", "unavailable"):
+            return
+        try:
+            price = float(new_state.state)
+        except ValueError:
+            return
+        self._last_known_price = price
+        self._price_changes.append((new_state.last_updated, price))
+
     @callback
     def _energy_state_changed(self, event):
         """Handle energy sensor state changes."""
@@ -169,20 +201,83 @@ class DynamicCostSensor(RestoreSensor):
         if energy_delta <= 0:
             return
 
-        # Fetch current price
+        interval_start = old_state.last_updated
+        interval_end = new_state.last_updated
+
+        # Use last-known price fallback when current price is unavailable
         price_state = self.hass.states.get(self._price_sensor_id)
-        if price_state is None or price_state.state in ("unknown", "unavailable"):
+        current_price = None
+        if price_state is not None and price_state.state not in ("unknown", "unavailable"):
+            try:
+                current_price = float(price_state.state)
+            except ValueError:
+                current_price = None
+        if current_price is None:
+            current_price = self._last_known_price
+        if current_price is None:
+            # No price has ever been seen; drop this delta to match
+            # the reconstruction's behavior when no price timeline exists.
             return
 
-        try:
-            current_price = float(price_state.state)
-        except ValueError:
-            return
+        # Split the interval at price changes recorded between the previous
+        # and current energy readings. Energy is apportioned uniformly over
+        # the interval by elapsed time.
+        cost_delta = self._cost_for_interval(
+            energy_delta, interval_start, interval_end, current_price
+        )
 
-        # Calculate cost and add to total
-        cost_delta = energy_delta * (current_price + self._fixed_addition)
+        # Keep the latest price change at or before interval_start (so the next
+        # interval knows its starting price) and any changes at/after interval_end.
+        kept = []
+        for ts, px in self._price_changes:
+            if ts <= interval_start:
+                kept = [(ts, px)]
+            elif ts >= interval_end:
+                kept.append((ts, px))
+        self._price_changes = kept
+
         self._state += cost_delta
         self.async_write_ha_state()
+
+    def _cost_for_interval(self, energy_delta, interval_start, interval_end, fallback_price):
+        """Apportion energy_delta across price-change sub-intervals.
+
+        Energy is assumed uniformly consumed over [interval_start, interval_end].
+        The starting price is the last recorded price change at or before
+        interval_start (or fallback_price if none). Price-change timestamps
+        falling strictly inside the interval split it; each subsequent
+        sub-interval uses the price set at its starting boundary.
+        """
+        total_seconds = (interval_end - interval_start).total_seconds()
+        if total_seconds <= 0:
+            return energy_delta * (fallback_price + self._fixed_addition)
+
+        # Determine the price effective at interval_start
+        starting_price = fallback_price
+        for ts, price in self._price_changes:
+            if ts <= interval_start:
+                starting_price = price
+            else:
+                break
+
+        # Build segment boundaries: (timestamp, price_effective_from_this_timestamp)
+        segments = [(interval_start, starting_price)]
+        for ts, price in self._price_changes:
+            if interval_start < ts < interval_end:
+                segments.append((ts, price))
+        segments.append((interval_end, None))
+
+        cost = 0.0
+        for i in range(1, len(segments)):
+            seg_start = segments[i - 1][0]
+            seg_price = segments[i - 1][1]
+            seg_end = segments[i][0]
+            seg_seconds = (seg_end - seg_start).total_seconds()
+            if seg_seconds <= 0:
+                continue
+            seg_energy = energy_delta * (seg_seconds / total_seconds)
+            cost += seg_energy * (seg_price + self._fixed_addition)
+        return cost
 
     @callback
     def _reset(self, time):
