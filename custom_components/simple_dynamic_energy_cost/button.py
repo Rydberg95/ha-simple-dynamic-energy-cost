@@ -17,7 +17,13 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     energy_sensor_id = entry.data[CONF_ENERGY_SENSOR]
-    async_add_entities([ExportMonthButton(hass, entry, energy_sensor_id)])
+    buttons = [ExportMonthButton(hass, entry, energy_sensor_id)]
+
+    cost_sensors = hass.data[DOMAIN][entry.entry_id].get("cost_sensors", {})
+    for period, cost_sensor in cost_sensors.items():
+        buttons.append(ResetCostButton(hass, entry, energy_sensor_id, period, cost_sensor))
+
+    async_add_entities(buttons)
 
 
 class ExportMonthButton(ButtonEntity):
@@ -61,3 +67,33 @@ class ExportMonthButton(ButtonEntity):
         last_export = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {}).get("last_export")
         if last_export is not None:
             last_export.apply_export_result(result)
+
+
+class ResetCostButton(ButtonEntity):
+    """Button that resets a specific period cost sensor to zero."""
+
+    _attr_icon = "mdi:undo"
+    _attr_should_poll = False
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        energy_sensor_id: str,
+        period: str,
+        cost_sensor,
+    ) -> None:
+        self.hass = hass
+        self._entry = entry
+        self._period = period
+        self._cost_sensor = cost_sensor
+
+        source_name = energy_sensor_id.split(".")[-1].replace("_", " ").title()
+        self._attr_name = f"{source_name} Reset {period}"
+        self._attr_unique_id = (
+            f"{entry.entry_id}_{energy_sensor_id.replace('.', '_')}_reset_{period.lower()}"
+        )
+
+    async def async_press(self) -> None:
+        """Reset the target cost sensor to zero."""
+        await self._cost_sensor.async_reset()

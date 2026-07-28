@@ -7,5 +7,5 @@
   "documentation": "https://github.com/Rydberg95/ha-simple-dynamic-energy-cost",
   "iot_class": "local_polling",
   "requirements": ["fpdf2==2.7.9"],
-  "version": "1.2.2"
+  "version": "1.3.0"
 }

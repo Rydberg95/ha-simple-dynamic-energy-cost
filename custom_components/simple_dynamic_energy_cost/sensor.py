@@ -34,26 +34,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         entry.data.get(CONF_FIXED_ADDITION, 0.0)
     )
     
-    sensors = []
-    
-    sensors.append(DynamicCostSensor(hass, entry.entry_id, "Accumulated", energy_sensor_id, price_sensor_id, fixed_addition))
-    
+    cost_sensors = {}
+
+    cost_sensors["Accumulated"] = DynamicCostSensor(hass, entry.entry_id, "Accumulated", energy_sensor_id, price_sensor_id, fixed_addition)
+
     if entry.data.get(CONF_PERIOD_HOURLY):
-        sensors.append(DynamicCostSensor(hass, entry.entry_id, "Hourly", energy_sensor_id, price_sensor_id, fixed_addition))
-        
+        cost_sensors["Hourly"] = DynamicCostSensor(hass, entry.entry_id, "Hourly", energy_sensor_id, price_sensor_id, fixed_addition)
+
     if entry.data.get(CONF_PERIOD_DAILY):
-        sensors.append(DynamicCostSensor(hass, entry.entry_id, "Daily", energy_sensor_id, price_sensor_id, fixed_addition))
-        
+        cost_sensors["Daily"] = DynamicCostSensor(hass, entry.entry_id, "Daily", energy_sensor_id, price_sensor_id, fixed_addition)
+
     if entry.data.get(CONF_PERIOD_MONTHLY):
-        sensors.append(DynamicCostSensor(hass, entry.entry_id, "Monthly", energy_sensor_id, price_sensor_id, fixed_addition))
+        cost_sensors["Monthly"] = DynamicCostSensor(hass, entry.entry_id, "Monthly", energy_sensor_id, price_sensor_id, fixed_addition)
 
     if entry.data.get(CONF_PERIOD_YEARLY):
-        sensors.append(DynamicCostSensor(hass, entry.entry_id, "Yearly", energy_sensor_id, price_sensor_id, fixed_addition))
+        cost_sensors["Yearly"] = DynamicCostSensor(hass, entry.entry_id, "Yearly", energy_sensor_id, price_sensor_id, fixed_addition)
+
+    sensors = list(cost_sensors.values())
 
     last_export = LastExportSensor(hass, entry.entry_id, energy_sensor_id)
     last_export.bind(price_sensor_id, fixed_addition)
     sensors.append(last_export)
 
+    hass.data[DOMAIN][entry.entry_id]["cost_sensors"] = cost_sensors
     hass.data[DOMAIN][entry.entry_id]["last_export"] = last_export
 
     platform = entity_platform.async_get_current_platform()

@@ -55,6 +55,12 @@
         "state": {
           "_": "Export"
         }
+      },
+      "reset_cost": {
+        "name": "Reset Cost",
+        "state": {
+          "_": "Reset"
+        }
       }
     }
   }
