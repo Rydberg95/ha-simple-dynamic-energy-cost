@@ -259,6 +259,125 @@ def _store(hass: HomeAssistant) -> storage.Store:
     return storage.Store(hass, STORAGE_VERSION, STORAGE_KEY)
 
 
+async def _stats_energy(
+    hass: HomeAssistant,
+    energy_sensor_id: str,
+    start_dt: datetime,
+    end_dt: datetime,
+) -> float | None:
+    """Total energy consumed in [start_dt, end_dt) from long-term statistics."""
+    try:
+        from homeassistant.components.recorder import statistics as stats_mod
+    except ImportError:
+        return None
+    end_inclusive = end_dt - timedelta(seconds=1)
+    try:
+        rows = await hass.async_add_executor_job(
+            stats_mod.statistics_during_period,
+            hass,
+            start_dt,
+            end_inclusive,
+            {energy_sensor_id},
+            "day",
+            None,
+            {"change"},
+        )
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("Failed to fetch statistics for %s", energy_sensor_id)
+        return None
+    stat_rows = (rows or {}).get(energy_sensor_id) or []
+    total = 0.0
+    found = False
+    for row in stat_rows:
+        change = row.get("change")
+        if change is None:
+            continue
+        total += change
+        found = True
+    if not found or total < 0:
+        return None
+    return total
+
+
+async def _reconstruct_from_cost_sensor(
+    hass: HomeAssistant,
+    entry_id: str,
+    energy_sensor_id: str,
+    fixed_addition: float,
+    month_start: datetime,
+    month_end: datetime,
+) -> dict | None:
+    """Rebuild the month from the Monthly cost sensor's own recorded history.
+
+    The Monthly sensor is a running total that starts at 0 at the month
+    boundary, so its last recorded state before month end is the month total
+    regardless of how much history the recorder has purged. Only the tail of
+    the month needs to survive.
+    """
+    cost_sensor = (
+        hass.data.get(DOMAIN, {}).get(entry_id, {}).get("cost_sensors", {}).get("Monthly")
+    )
+    entity_id = getattr(cost_sensor, "entity_id", None)
+    if not entity_id:
+        return None
+
+    states = await hass.async_add_executor_job(
+        history.get_significant_states, hass, month_start, month_end, [entity_id]
+    )
+    state_list = states.get(entity_id, []) if states else []
+
+    last_val = None
+    last_ts = None
+    last_attrs = None
+    for st in state_list:
+        val = _to_float(st.state)
+        if val is None:
+            continue
+        last_val = val
+        last_ts = st.last_updated
+        last_attrs = st.attributes
+
+    if last_val is None or last_ts is None:
+        return None
+    if last_ts < month_end - _COVERAGE_TOLERANCE:
+        return None
+
+    total_cost = last_val
+    energy = None
+    spot = None
+    fixed = None
+    split_recovered = False
+
+    if last_attrs:
+        energy = _to_float(last_attrs.get("energy_consumed_kwh"))
+        spot = _to_float(last_attrs.get("spot_cost"))
+        fixed = _to_float(last_attrs.get("fixed_cost"))
+        if energy is not None and spot is not None and fixed is not None:
+            split_recovered = True
+
+    if not split_recovered:
+        energy = await _stats_energy(hass, energy_sensor_id, month_start, month_end)
+        if energy is not None:
+            fixed = energy * fixed_addition
+            spot = total_cost - fixed
+            split_recovered = True
+        else:
+            energy = None
+            spot = None
+            fixed = None
+
+    return {
+        "energy_consumed_kwh": round(energy, 4) if energy is not None else None,
+        "spot_cost": round(spot, 2) if spot is not None else None,
+        "fixed_cost": round(fixed, 2) if fixed is not None else None,
+        "total_cost": round(total_cost, 2),
+        "complete": True,
+        "split_recovered": split_recovered,
+        "data_from": month_start.isoformat(),
+        "data_to": last_ts.isoformat(),
+    }
+
+
 async def load_summaries(hass: HomeAssistant) -> dict:
     data = await _store(hass).async_load() or {}
     return data.get(MONTHLY_SUMMARIES_KEY, {}) if isinstance(data, dict) else {}
@@ -293,9 +412,18 @@ async def compute_month_summary(
     month_key = _month_key(month_start)
     existing = await get_summary(hass, entry_id, month_key)
 
-    reconstructed = await _reconstruct(
-        hass, energy_sensor_id, price_sensor_id, fixed_addition, month_start, month_end
+    if existing is not None and existing.get("source") == "live":
+        return existing
+
+    reconstructed = await _reconstruct_from_cost_sensor(
+        hass, entry_id, energy_sensor_id, fixed_addition, month_start, month_end
     )
+    source = "cost_sensor"
+    if reconstructed is None:
+        reconstructed = await _reconstruct(
+            hass, energy_sensor_id, price_sensor_id, fixed_addition, month_start, month_end
+        )
+        source = "recorder"
 
     summary = {
         "month_key": month_key,
@@ -304,7 +432,7 @@ async def compute_month_summary(
         "energy_sensor": energy_sensor_id,
         "device_name": _device_name(hass, energy_sensor_id),
         "currency": hass.config.currency or "SEK",
-        "source": "recorder",
+        "source": source,
         **reconstructed,
     }
 
@@ -317,9 +445,13 @@ async def compute_month_summary(
         )
 
     if existing is not None:
-        if existing.get("source") == "live":
-            return existing
         if existing.get("complete") and not summary["complete"]:
+            return existing
+        if (
+            existing.get("complete")
+            and existing.get("split_recovered", True)
+            and summary.get("split_recovered") is False
+        ):
             return existing
         if summary["energy_consumed_kwh"] == 0.0:
             return existing
@@ -342,22 +474,39 @@ def _coverage_warning(summary: dict) -> str | None:
     return "Ofullständig historik för perioden"
 
 
+def _split_warning(summary: dict) -> str | None:
+    if summary.get("split_recovered") is False:
+        return "Fördelningen mellan spotpris och fast avgift kunde inte återställas"
+    return None
+
+
+def _report_warnings(summary: dict) -> list[str]:
+    return [w for w in (_coverage_warning(summary), _split_warning(summary)) if w]
+
+
+def _fmt_kwh(value) -> str:
+    if value is None:
+        return "okänd"
+    return f"{str(value).replace('.', ',')} kWh"
+
+
+def _fmt_cur(value, cur: str) -> str:
+    if value is None:
+        return "okänd"
+    return f"{str(value).replace('.', ',')} {cur}"
+
+
 def _csv_bytes(summary: dict) -> bytes:
     cur = summary["currency"]
-    energy = str(summary["energy_consumed_kwh"]).replace(".", ",")
-    spot = str(summary["spot_cost"]).replace(".", ",")
-    fixed = str(summary["fixed_cost"]).replace(".", ",")
-    total = str(summary["total_cost"]).replace(".", ",")
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["Period", f"{summary['period_start']} till {summary['period_end']}"])
     writer.writerow(["Enhet", summary["device_name"]])
-    writer.writerow(["Total förbrukning", f"{energy} kWh"])
-    writer.writerow(["Totalkostnad elhandel (Spotpris)", f"{spot} {cur}"])
-    writer.writerow(["Totalkostnad rörlig elnätsavgift & energiskatt", f"{fixed} {cur}"])
-    writer.writerow(["Totalt belopp", f"{total} {cur}"])
-    warning = _coverage_warning(summary)
-    if warning:
+    writer.writerow(["Total förbrukning", _fmt_kwh(summary["energy_consumed_kwh"])])
+    writer.writerow(["Totalkostnad elhandel (Spotpris)", _fmt_cur(summary["spot_cost"], cur)])
+    writer.writerow(["Totalkostnad rörlig elnätsavgift & energiskatt", _fmt_cur(summary["fixed_cost"], cur)])
+    writer.writerow(["Totalt belopp", _fmt_cur(summary["total_cost"], cur)])
+    for warning in _report_warnings(summary):
         writer.writerow(["Varning", warning])
     return buf.getvalue().encode("utf-8-sig")
 
@@ -372,19 +521,15 @@ def _pdf_bytes(summary: dict) -> bytes:
     pdf.cell(0, 10, f"Elförbrukning {summary['month_key']}", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
 
-    def _fmt(value: float, unit: str) -> str:
-        return f"{value}".replace(".", ",") + " " + unit
-
     rows = [
         ("Period", f"{summary['period_start']} till {summary['period_end']}"),
         ("Enhet", summary["device_name"]),
-        ("Total förbrukning", _fmt(summary["energy_consumed_kwh"], "kWh")),
-        ("Totalkostnad elhandel (Spotpris)", _fmt(summary["spot_cost"], cur)),
-        ("Totalkostnad rörlig elnätsavgift & energiskatt", _fmt(summary["fixed_cost"], cur)),
-        ("Totalt belopp", _fmt(summary["total_cost"], cur)),
+        ("Total förbrukning", _fmt_kwh(summary["energy_consumed_kwh"])),
+        ("Totalkostnad elhandel (Spotpris)", _fmt_cur(summary["spot_cost"], cur)),
+        ("Totalkostnad rörlig elnätsavgift & energiskatt", _fmt_cur(summary["fixed_cost"], cur)),
+        ("Totalt belopp", _fmt_cur(summary["total_cost"], cur)),
     ]
-    warning = _coverage_warning(summary)
-    if warning:
+    for warning in _report_warnings(summary):
         rows.append(("Varning", warning))
 
     pdf.set_font("Helvetica", "B", 12)

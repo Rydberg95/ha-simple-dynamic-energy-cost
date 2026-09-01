@@ -508,6 +508,7 @@ class LastExportSensor(RestoreSensor):
         attrs["total_cost"] = summary["total_cost"]
         attrs["currency"] = summary["currency"]
         attrs["data_complete"] = bool(summary.get("complete", False))
+        attrs["split_recovered"] = bool(summary.get("split_recovered", True))
         if summary.get("data_from"):
             attrs["data_from"] = summary["data_from"]
         if summary.get("data_to"):

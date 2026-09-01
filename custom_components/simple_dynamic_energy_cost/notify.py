@@ -140,12 +140,16 @@ async def async_run_monthly_notify(
     csv_url = urls.get("csv")
     cur = summary["currency"]
     title = f"{summary['device_name']} energy cost {summary['month_key']}: {summary['total_cost']} {cur}"
-    lines = [
-        f"Consumption: {summary['energy_consumed_kwh']} kWh",
-        f"Spot price cost: {summary['spot_cost']} {cur}",
-        f"Grid & tax: {summary['fixed_cost']} {cur}",
-        f"Total: {summary['total_cost']} {cur}",
-    ]
+    lines = []
+    if summary.get("energy_consumed_kwh") is not None:
+        lines.append(f"Consumption: {summary['energy_consumed_kwh']} kWh")
+    if summary.get("spot_cost") is not None:
+        lines.append(f"Spot price cost: {summary['spot_cost']} {cur}")
+    if summary.get("fixed_cost") is not None:
+        lines.append(f"Grid & tax: {summary['fixed_cost']} {cur}")
+    lines.append(f"Total: {summary['total_cost']} {cur}")
+    if summary.get("split_recovered") is False:
+        lines.append("Warning: spot/fixed cost split could not be recovered")
     if not summary.get("complete", False):
         lines.append("Warning: data coverage for this report is incomplete")
     if pdf_url:
