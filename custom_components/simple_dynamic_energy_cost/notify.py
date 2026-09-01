@@ -146,6 +146,8 @@ async def async_run_monthly_notify(
         f"Grid & tax: {summary['fixed_cost']} {cur}",
         f"Total: {summary['total_cost']} {cur}",
     ]
+    if not summary.get("complete", False):
+        lines.append("Warning: data coverage for this report is incomplete")
     if pdf_url:
         lines.append(f"Report (PDF): {pdf_url}")
     if csv_url:

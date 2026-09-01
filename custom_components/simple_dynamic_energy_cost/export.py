@@ -1,9 +1,8 @@
-import asyncio
 import csv
 import io
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from homeassistant.components.recorder import history
 from homeassistant.core import HomeAssistant
@@ -18,6 +17,9 @@ STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.{MONTHLY_SUMMARIES_KEY}"
 
 _MONTH_FMT = "%Y-%m"
+
+_COVERAGE_TOLERANCE = timedelta(hours=36)
+_PRICE_LOOKBACK = timedelta(days=7)
 
 
 def _to_float(value) -> float | None:
@@ -45,11 +47,22 @@ def _month_key(start_dt: datetime) -> str:
 
 
 def _parse_date(value: str) -> datetime:
-    parsed = dt_util.parse_datetime(value)
-    if parsed is None:
+    value = value.strip()
+    parsed = None
+    try:
         parsed = datetime.fromisoformat(value)
+    except ValueError:
+        parsed = dt_util.parse_datetime(value)
+    if parsed is None:
+        date_only = dt_util.parse_date(value)
+        if date_only is not None:
+            parsed = datetime.combine(date_only, datetime.min.time())
+    if parsed is None:
+        raise ValueError(f"Could not parse date: {value}")
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=dt_util.get_default_time_zone())
+    else:
+        parsed = parsed.astimezone(dt_util.get_default_time_zone())
     return parsed
 
 
@@ -60,6 +73,36 @@ def _month_bounds(start_dt: datetime) -> tuple[datetime, datetime]:
     else:
         end = start.replace(month=start.month + 1)
     return start, end
+
+
+def build_live_summary(
+    hass: HomeAssistant,
+    energy_sensor_id: str,
+    month_start: datetime,
+    energy_kwh: float,
+    spot_cost: float,
+    fixed_cost: float,
+    total_cost: float,
+    data_from: datetime | None = None,
+) -> dict:
+    """Build a month summary from live-tracked sensor totals (source of truth)."""
+    period_start, period_end = _month_bounds(month_start)
+    complete = data_from is not None and data_from <= period_start + _COVERAGE_TOLERANCE
+    return {
+        "month_key": _month_key(period_start),
+        "period_start": period_start.date().isoformat(),
+        "period_end": (period_end - timedelta(days=1)).date().isoformat(),
+        "energy_sensor": energy_sensor_id,
+        "device_name": _device_name(hass, energy_sensor_id),
+        "currency": hass.config.currency or "SEK",
+        "energy_consumed_kwh": round(energy_kwh, 4),
+        "spot_cost": round(spot_cost, 2),
+        "fixed_cost": round(fixed_cost, 2),
+        "total_cost": round(total_cost, 2),
+        "data_from": data_from.isoformat() if data_from else None,
+        "complete": complete,
+        "source": "live",
+    }
 
 
 def _build_price_timeline(states) -> list[tuple[datetime, float]]:
@@ -151,7 +194,11 @@ async def _reconstruct(
     energy_list = energy_states.get(energy_sensor_id, []) if energy_states else []
 
     price_states = await hass.async_add_executor_job(
-        history.get_significant_states, hass, start_dt, end_dt, [price_sensor_id]
+        history.get_significant_states,
+        hass,
+        start_dt - _PRICE_LOOKBACK,
+        end_dt,
+        [price_sensor_id],
     )
     price_list = price_states.get(price_sensor_id, []) if price_states else []
     price_timeline = _build_price_timeline(price_list)
@@ -159,30 +206,41 @@ async def _reconstruct(
     total_energy = 0.0
     total_spot = 0.0
     total_fixed = 0.0
+    first_ts = None
+    last_ts = None
+    prev_val = None
+    prev_ts = None
 
-    for i in range(1, len(energy_list)):
-        old_val = _to_float(energy_list[i - 1].state)
-        new_val = _to_float(energy_list[i].state)
-        if old_val is None or new_val is None:
+    for st in energy_list:
+        val = _to_float(st.state)
+        if val is None:
             continue
-        if new_val >= old_val:
-            delta = new_val - old_val
-        else:
-            delta = new_val
-        if delta <= 0:
-            continue
-        result = _segment_cost(
-            delta,
-            energy_list[i - 1].last_updated,
-            energy_list[i].last_updated,
-            price_timeline,
-            fixed_addition,
-        )
-        if result is None:
-            continue
-        total_energy += result[0]
-        total_spot += result[1]
-        total_fixed += result[2]
+        ts = st.last_updated
+        if first_ts is None:
+            first_ts = ts
+        last_ts = ts
+        if prev_val is not None:
+            if val >= prev_val:
+                delta = val - prev_val
+            else:
+                delta = val
+            if delta > 0:
+                result = _segment_cost(
+                    delta, prev_ts, ts, price_timeline, fixed_addition
+                )
+                if result is not None:
+                    total_energy += result[0]
+                    total_spot += result[1]
+                    total_fixed += result[2]
+        prev_val = val
+        prev_ts = ts
+
+    head_covered = first_ts is not None and first_ts <= start_dt + _COVERAGE_TOLERANCE
+    tail_covered = last_ts is not None and last_ts >= end_dt - _COVERAGE_TOLERANCE
+    price_head_covered = (
+        bool(price_timeline) and price_timeline[0][0] <= start_dt + _COVERAGE_TOLERANCE
+    )
+    complete = head_covered and tail_covered and price_head_covered
 
     total = total_spot + total_fixed
 
@@ -191,6 +249,9 @@ async def _reconstruct(
         "spot_cost": round(total_spot, 2),
         "fixed_cost": round(total_fixed, 2),
         "total_cost": round(total, 2),
+        "complete": complete,
+        "data_from": first_ts.isoformat() if first_ts else None,
+        "data_to": last_ts.isoformat() if last_ts else None,
     }
 
 
@@ -236,9 +297,6 @@ async def compute_month_summary(
         hass, energy_sensor_id, price_sensor_id, fixed_addition, month_start, month_end
     )
 
-    if reconstructed["energy_consumed_kwh"] == 0.0 and existing is not None:
-        return existing
-
     summary = {
         "month_key": month_key,
         "period_start": month_start.date().isoformat(),
@@ -246,10 +304,42 @@ async def compute_month_summary(
         "energy_sensor": energy_sensor_id,
         "device_name": _device_name(hass, energy_sensor_id),
         "currency": hass.config.currency or "SEK",
+        "source": "recorder",
         **reconstructed,
     }
+
+    if not summary["complete"]:
+        _LOGGER.warning(
+            "Reconstructed summary for %s has incomplete data coverage (%s to %s)",
+            month_key,
+            summary["data_from"],
+            summary["data_to"],
+        )
+
+    if existing is not None:
+        if existing.get("source") == "live":
+            return existing
+        if existing.get("complete") and not summary["complete"]:
+            return existing
+        if summary["energy_consumed_kwh"] == 0.0:
+            return existing
+
+    current = await get_summary(hass, entry_id, month_key)
+    if current is not None and current.get("source") == "live":
+        return current
+
     await save_summary(hass, entry_id, summary)
     return summary
+
+
+def _coverage_warning(summary: dict) -> str | None:
+    if summary.get("complete", False):
+        return None
+    data_from = summary.get("data_from")
+    data_to = summary.get("data_to")
+    if data_from and data_to:
+        return f"Ofullständig historik: {data_from} till {data_to}"
+    return "Ofullständig historik för perioden"
 
 
 def _csv_bytes(summary: dict) -> bytes:
@@ -266,6 +356,9 @@ def _csv_bytes(summary: dict) -> bytes:
     writer.writerow(["Totalkostnad elhandel (Spotpris)", f"{spot} {cur}"])
     writer.writerow(["Totalkostnad rörlig elnätsavgift & energiskatt", f"{fixed} {cur}"])
     writer.writerow(["Totalt belopp", f"{total} {cur}"])
+    warning = _coverage_warning(summary)
+    if warning:
+        writer.writerow(["Varning", warning])
     return buf.getvalue().encode("utf-8-sig")
 
 
@@ -290,6 +383,9 @@ def _pdf_bytes(summary: dict) -> bytes:
         ("Totalkostnad rörlig elnätsavgift & energiskatt", _fmt(summary["fixed_cost"], cur)),
         ("Totalt belopp", _fmt(summary["total_cost"], cur)),
     ]
+    warning = _coverage_warning(summary)
+    if warning:
+        rows.append(("Varning", warning))
 
     pdf.set_font("Helvetica", "B", 12)
     pdf.set_fill_color(230, 230, 230)
