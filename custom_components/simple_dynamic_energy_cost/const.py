@@ -12,11 +12,13 @@ CONF_NOTIFY_ENABLED = "notify_enabled"
 CONF_NOTIFY_TOPICS = "notify_topics"
 CONF_NOTIFY_SERVER = "notify_server"
 CONF_NOTIFY_TIME = "notify_time"
+CONF_NOTIFY_VERIFY_SSL = "notify_verify_ssl"
 
 DEFAULT_NOTIFY_SERVER = "https://ntfy.sh"
 DEFAULT_NOTIFY_TIME = "09:00:00"
 
 SERVICE_EXPORT_MONTH = "export_month"
+SERVICE_SEND_TEST_NOTIFICATION = "send_test_notification"
 ATTR_START_DATE = "start_date"
 ATTR_END_DATE = "end_date"
 

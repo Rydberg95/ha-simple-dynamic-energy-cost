@@ -17,9 +17,10 @@ from .const import (
     CONF_PERIOD_YEARLY,
     CONF_FIXED_ADDITION,
     SERVICE_EXPORT_MONTH,
+    SERVICE_SEND_TEST_NOTIFICATION,
     ATTR_START_DATE,
 )
-from . import export
+from . import export, notify
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -73,6 +74,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             vol.Optional("format", default="both"): vol.In(["csv", "pdf", "both"]),
         },
         "async_export_month",
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_SEND_TEST_NOTIFICATION,
+        {},
+        "async_send_test_notification",
     )
 
     async_add_entities(sensors)
@@ -382,6 +389,13 @@ class LastExportSensor(RestoreSensor):
             fmt,
         )
         self.apply_export_result(result)
+
+    async def async_send_test_notification(self, **kwargs) -> None:
+        """Service handler: send the latest monthly export notification now."""
+        entry = self.hass.data[DOMAIN][self._entry_id].get("entry")
+        if entry is None:
+            return
+        await notify.async_send_test_notification(self.hass, entry)
 
     def apply_export_result(self, result: dict) -> None:
         """Update sensor state/attributes from an export result."""

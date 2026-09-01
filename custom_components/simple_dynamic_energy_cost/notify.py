@@ -74,6 +74,7 @@ async def async_send_ntfy(
     title: str,
     message: str,
     click_url: str | None = None,
+    verify_ssl: bool = True,
 ) -> bool:
     session = async_get_clientsession(hass)
     base = (server or DEFAULT_NOTIFY_SERVER).rstrip("/")
@@ -86,7 +87,12 @@ async def async_send_ntfy(
             headers["Actions"] = f"view, Open report, {click_url}, clear=true"
         try:
             async with asyncio.timeout(30):
-                resp = await session.post(url, data=message.encode("utf-8"), headers=headers)
+                resp = await session.post(
+                    url,
+                    data=message.encode("utf-8"),
+                    headers=headers,
+                    ssl=False if not verify_ssl else None,
+                )
                 resp.raise_for_status()
         except Exception as err:  # noqa: BLE001
             all_ok = False
@@ -111,6 +117,9 @@ async def async_run_monthly_notify(
         return
     server = entry.options.get(
         CONF_NOTIFY_SERVER, entry.data.get(CONF_NOTIFY_SERVER, DEFAULT_NOTIFY_SERVER)
+    )
+    verify_ssl = entry.options.get(
+        CONF_NOTIFY_VERIFY_SSL, entry.data.get(CONF_NOTIFY_VERIFY_SSL, True)
     )
 
     now = dt_util.now()
@@ -142,7 +151,9 @@ async def async_run_monthly_notify(
         lines.append(f"Report (CSV): {csv_url}")
     message = "\n".join(lines)
 
-    ok = await async_send_ntfy(hass, server, list(topics), title, message, pdf_url)
+    ok = await async_send_ntfy(
+        hass, server, list(topics), title, message, pdf_url, verify_ssl
+    )
     if not ok:
         await hass.services.async_call(
             "persistent_notification",
@@ -156,6 +167,11 @@ async def async_run_monthly_notify(
 
     if mark_notified:
         await _mark_notified(hass, entry_id, summary["month_key"])
+
+
+async def async_send_test_notification(hass: HomeAssistant, entry) -> None:
+    """Send the latest monthly export notification immediately, as if it were the 1st."""
+    await async_run_monthly_notify(hass, entry, mark_notified=False)
 
 
 async def async_catch_up_if_needed(hass: HomeAssistant, entry) -> None:

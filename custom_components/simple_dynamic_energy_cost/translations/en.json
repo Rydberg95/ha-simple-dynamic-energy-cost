@@ -29,19 +29,25 @@
           "notify_enabled": "Send ntfy notification after each month",
           "notify_topics": "Ntfy topics (one per device)",
           "notify_server": "Ntfy server",
-          "notify_time": "Notification time"
+          "notify_time": "Notification time",
+          "notify_verify_ssl": "Verify SSL certificate"
         },
         "data_description": {
           "fixed_addition": "Update the fixed amount added to the price per kWh. Enter this value in the exact same currency as your price sensor.",
           "notify_enabled": "On the 1st of each month, the previous month's report is exported and its download links are pushed via ntfy.",
           "notify_topics": "Type a topic name and press Enter for each device. In the ntfy app, subscribe each device to one of these topics. Use long, unguessable topic names — topics act as passwords.",
           "notify_server": "Leave as https://ntfy.sh unless you self-host ntfy.",
-          "notify_time": "Time of day on the 1st when the notification is sent (default 09:00)."
+          "notify_time": "Time of day on the 1st when the notification is sent (default 09:00).",
+          "notify_verify_ssl": "Disable only if your self-hosted ntfy server uses a certificate Home Assistant doesn't trust."
         }
       }
     }
   },
   "services": {
+    "send_test_notification": {
+      "name": "Send test notification",
+      "description": "Sends the latest monthly export notification immediately, exactly as it would be sent on the 1st of the month. Does not mark the month as notified."
+    },
     "export_month": {
       "name": "Export month report",
       "description": "Exports a monthly bookkeeping report (CSV + PDF) to the www/ folder with a downloadable link.",

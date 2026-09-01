@@ -19,7 +19,7 @@ def _get_notify_option(entry: ConfigEntry, key: str, default=None):
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = {"data": entry.data}
+    hass.data[DOMAIN][entry.entry_id] = {"data": entry.data, "entry": entry}
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

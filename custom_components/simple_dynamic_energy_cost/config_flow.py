@@ -15,6 +15,7 @@ from .const import (
     CONF_NOTIFY_TOPICS,
     CONF_NOTIFY_SERVER,
     CONF_NOTIFY_TIME,
+    CONF_NOTIFY_VERIFY_SSL,
     DEFAULT_NOTIFY_SERVER,
     DEFAULT_NOTIFY_TIME,
 )
@@ -90,6 +91,10 @@ class DynamicEnergyCostOptionsFlowHandler(config_entries.OptionsFlow):
             CONF_NOTIFY_TIME,
             self._config_entry.data.get(CONF_NOTIFY_TIME, DEFAULT_NOTIFY_TIME)
         )
+        current_verify_ssl = self._config_entry.options.get(
+            CONF_NOTIFY_VERIFY_SSL,
+            self._config_entry.data.get(CONF_NOTIFY_VERIFY_SSL, True)
+        )
 
         options_schema = vol.Schema(
             {
@@ -104,6 +109,7 @@ class DynamicEnergyCostOptionsFlowHandler(config_entries.OptionsFlow):
                 ),
                 vol.Optional(CONF_NOTIFY_SERVER, description={"suggested_value": current_notify_server}): str,
                 vol.Optional(CONF_NOTIFY_TIME, description={"suggested_value": current_notify_time}): selector.TimeSelector(),
+                vol.Optional(CONF_NOTIFY_VERIFY_SSL, default=current_verify_ssl): bool,
             }
         )
 
