@@ -11,6 +11,12 @@ from .const import (
     CONF_PERIOD_MONTHLY,
     CONF_PERIOD_YEARLY,
     CONF_FIXED_ADDITION,
+    CONF_NOTIFY_ENABLED,
+    CONF_NOTIFY_TOPICS,
+    CONF_NOTIFY_SERVER,
+    CONF_NOTIFY_TIME,
+    DEFAULT_NOTIFY_SERVER,
+    DEFAULT_NOTIFY_TIME,
 )
 
 class DynamicEnergyCostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -64,13 +70,40 @@ class DynamicEnergyCostOptionsFlowHandler(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=user_input)
 
         current_fixed_addition = self._config_entry.options.get(
-            CONF_FIXED_ADDITION, 
+            CONF_FIXED_ADDITION,
             self._config_entry.data.get(CONF_FIXED_ADDITION, 0.0)
+        )
+
+        current_notify_enabled = self._config_entry.options.get(
+            CONF_NOTIFY_ENABLED,
+            self._config_entry.data.get(CONF_NOTIFY_ENABLED, False)
+        )
+        current_notify_topics = self._config_entry.options.get(
+            CONF_NOTIFY_TOPICS,
+            self._config_entry.data.get(CONF_NOTIFY_TOPICS, [])
+        )
+        current_notify_server = self._config_entry.options.get(
+            CONF_NOTIFY_SERVER,
+            self._config_entry.data.get(CONF_NOTIFY_SERVER, DEFAULT_NOTIFY_SERVER)
+        )
+        current_notify_time = self._config_entry.options.get(
+            CONF_NOTIFY_TIME,
+            self._config_entry.data.get(CONF_NOTIFY_TIME, DEFAULT_NOTIFY_TIME)
         )
 
         options_schema = vol.Schema(
             {
                 vol.Optional(CONF_FIXED_ADDITION, default=current_fixed_addition): vol.Coerce(float),
+                vol.Optional(CONF_NOTIFY_ENABLED, default=current_notify_enabled): bool,
+                vol.Optional(CONF_NOTIFY_TOPICS, description={"suggested_value": current_notify_topics}): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        multiple=True,
+                        custom_value=True,
+                        options=[],
+                    )
+                ),
+                vol.Optional(CONF_NOTIFY_SERVER, description={"suggested_value": current_notify_server}): str,
+                vol.Optional(CONF_NOTIFY_TIME, description={"suggested_value": current_notify_time}): selector.TimeSelector(),
             }
         )
 

@@ -332,20 +332,9 @@ def _public_url(hass: HomeAssistant, relative: str) -> str:
     return f"{base}{relative}" if base else relative
 
 
-async def export_month(
-    hass: HomeAssistant,
-    entry_id: str,
-    energy_sensor_id: str,
-    price_sensor_id: str,
-    fixed_addition: float,
-    start_date: str,
-    fmt: str = "csv",
+async def write_month_files(
+    hass: HomeAssistant, summary: dict, fmt: str = "both"
 ) -> dict:
-    start_dt = _parse_date(start_date)
-    summary = await compute_month_summary(
-        hass, entry_id, energy_sensor_id, price_sensor_id, fixed_addition, start_dt
-    )
-
     device_slug = _sanitize(summary["device_name"])
     base = f"energy_cost_{device_slug}_{summary['month_key']}"
 
@@ -362,4 +351,22 @@ async def export_month(
         rel = await hass.async_add_executor_job(_write_file, hass, filename, content)
         results[f] = {"relative_url": rel, "absolute_url": _public_url(hass, rel)}
 
-    return {"summary": summary, "files": results}
+    return results
+
+
+async def export_month(
+    hass: HomeAssistant,
+    entry_id: str,
+    energy_sensor_id: str,
+    price_sensor_id: str,
+    fixed_addition: float,
+    start_date: str,
+    fmt: str = "csv",
+) -> dict:
+    start_dt = _parse_date(start_date)
+    summary = await compute_month_summary(
+        hass, entry_id, energy_sensor_id, price_sensor_id, fixed_addition, start_dt
+    )
+
+    files = await write_month_files(hass, summary, fmt)
+    return {"summary": summary, "files": files}

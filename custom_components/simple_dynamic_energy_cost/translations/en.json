@@ -23,11 +23,20 @@
     "step": {
       "init": {
         "title": "Adjust Dynamic Energy Cost Settings",
+        "description": "Fixed addition is added to the spot price per kWh. Ntfy notifications send the monthly report's direct download links to your devices after every completed month.",
         "data": {
-          "fixed_addition": "Fixed Price Addition (Grid Fee / Tax)"
+          "fixed_addition": "Fixed Price Addition (Grid Fee / Tax)",
+          "notify_enabled": "Send ntfy notification after each month",
+          "notify_topics": "Ntfy topics (one per device)",
+          "notify_server": "Ntfy server",
+          "notify_time": "Notification time"
         },
         "data_description": {
-          "fixed_addition": "Update the fixed amount added to the price per kWh. Enter this value in the exact same currency as your price sensor."
+          "fixed_addition": "Update the fixed amount added to the price per kWh. Enter this value in the exact same currency as your price sensor.",
+          "notify_enabled": "On the 1st of each month, the previous month's report is exported and its download links are pushed via ntfy.",
+          "notify_topics": "Type a topic name and press Enter for each device. In the ntfy app, subscribe each device to one of these topics. Use long, unguessable topic names — topics act as passwords.",
+          "notify_server": "Leave as https://ntfy.sh unless you self-host ntfy.",
+          "notify_time": "Time of day on the 1st when the notification is sent (default 09:00)."
         }
       }
     }
