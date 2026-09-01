@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import io
 import logging
 import os
@@ -590,7 +591,12 @@ async def write_month_files(
             ext = "pdf"
         filename = f"{base}.{ext}"
         rel = await hass.async_add_executor_job(_write_file, hass, filename, content)
-        results[f] = {"relative_url": rel, "absolute_url": _public_url(hass, rel)}
+        version = hashlib.md5(content).hexdigest()[:8]
+        cache_busted = f"{rel}?v={version}"
+        results[f] = {
+            "relative_url": cache_busted,
+            "absolute_url": _public_url(hass, cache_busted),
+        }
 
     return results
 
