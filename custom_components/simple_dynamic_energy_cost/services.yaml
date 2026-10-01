@@ -1,0 +1,30 @@
+reset:
+  name: Reset cost sensor
+  description: Sets the state of the selected cost sensor back to zero.
+
+export_month:
+  name: Export month report
+  description: Writes a monthly bookkeeping report to the www folder and exposes the download links on the Last Export sensor.
+  fields:
+    start_date:
+      name: Start date
+      description: Any date within the month to export, for example 2026-09-01. The whole month is exported.
+      required: true
+      example: "2026-09-01"
+      selector:
+        text: {}
+    format:
+      name: Format
+      description: File format to export.
+      required: false
+      example: "both"
+      selector:
+        select:
+          options:
+            - "csv"
+            - "pdf"
+            - "both"
+
+send_test_notification:
+  name: Send test notification
+  description: Sends the latest monthly export notification immediately, exactly as it would be sent on the 1st of the month. Does not mark the month as notified.

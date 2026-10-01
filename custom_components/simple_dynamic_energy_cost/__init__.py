@@ -1,4 +1,6 @@
-from homeassistant.config_entries import ConfigEntry
+import logging
+
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
 
@@ -10,11 +12,33 @@ from .const import (
 )
 from . import notify
 
+_LOGGER = logging.getLogger(__name__)
+
 PLATFORMS = ["sensor", "button"]
 
 
 def _get_notify_option(entry: ConfigEntry, key: str, default=None):
     return entry.options.get(key, entry.data.get(key, default))
+
+
+async def _async_notify_check(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    try:
+        await notify.async_check_and_notify(hass, entry)
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("Monthly ntfy check failed for %s", entry.title)
+
+
+def _schedule_notify_check(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Run the check on the entry when it is loaded, on hass before that.
+
+    entry.async_create_task() refuses to run until the entry is fully loaded,
+    so the start-up call inside async_setup_entry has to go via hass.
+    """
+    coro = _async_notify_check(hass, entry)
+    if entry.state is ConfigEntryState.LOADED:
+        entry.async_create_task(coro)
+    else:
+        hass.async_create_task(coro)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -33,7 +57,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         @callback
         def _notify_check(now):
-            entry.async_create_task(notify.async_check_and_notify(hass, entry))
+            _schedule_notify_check(hass, entry)
 
         entry.async_on_unload(
             async_track_time_change(hass, _notify_check, hour=hour, minute=minute, second=0)
@@ -42,7 +66,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             async_track_time_change(hass, _notify_check, minute=range(60), second=0)
         )
 
-        entry.async_create_task(notify.async_check_and_notify(hass, entry))
+        _schedule_notify_check(hass, entry)
 
     return True
 

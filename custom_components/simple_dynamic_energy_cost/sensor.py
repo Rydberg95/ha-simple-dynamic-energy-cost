@@ -4,7 +4,7 @@ from homeassistant.components.sensor import SensorStateClass, RestoreSensor
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -468,9 +468,8 @@ class LastExportSensor(RestoreSensor):
         self._attr_extra_state_attributes = {"card_url": card.card_url(hass, self._entry_id)}
 
     def _create_task(self, coro):
-        creator = getattr(self._entry, "async_create_task", None)
-        if creator is not None:
-            return creator(coro)
+        if self._entry.state is ConfigEntryState.LOADED:
+            return self._entry.async_create_task(coro)
         return self.hass.async_create_task(coro)
 
     def bind(self, price_sensor_id: str, fixed_addition: float) -> None:
