@@ -1,6 +1,6 @@
 import logging
 
-from homeassistant.config_entries import ConfigEntry, ConfigEntryState
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
 
@@ -29,16 +29,7 @@ async def _async_notify_check(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 def _schedule_notify_check(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Run the check on the entry when it is loaded, on hass before that.
-
-    entry.async_create_task() refuses to run until the entry is fully loaded,
-    so the start-up call inside async_setup_entry has to go via hass.
-    """
-    coro = _async_notify_check(hass, entry)
-    if entry.state is ConfigEntryState.LOADED:
-        entry.async_create_task(coro)
-    else:
-        hass.async_create_task(coro)
+    hass.async_create_task(_async_notify_check(hass, entry))
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
