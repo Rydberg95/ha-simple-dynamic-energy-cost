@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from datetime import datetime
 
 from homeassistant.core import HomeAssistant
@@ -29,6 +30,9 @@ STORAGE_KEY = f"{DOMAIN}.notify_state"
 
 _MONTH_FMT = "%Y-%m"
 
+_INVALID_TOPIC_CHARS = re.compile(r"[^A-Za-z0-9_-]")
+_TOPIC_NAME_LIMIT = 64
+
 
 def _store(hass: HomeAssistant) -> storage.Store:
     return storage.Store(hass, STORAGE_VERSION, STORAGE_KEY)
@@ -51,6 +55,20 @@ async def _mark_notified(hass: HomeAssistant, entry_id: str, month_key: str) -> 
     await _store(hass).async_save(data)
 
 
+def _option(entry, key, default=None):
+    return entry.options.get(key, entry.data.get(key, default))
+
+
+def _notify_lock(hass: HomeAssistant, entry_id: str) -> asyncio.Lock:
+    """Serialise sends so the scheduled and hourly timers cannot double-send."""
+    entry_data = hass.data.setdefault(DOMAIN, {}).setdefault(entry_id, {})
+    lock = entry_data.get("notify_lock")
+    if lock is None:
+        lock = asyncio.Lock()
+        entry_data["notify_lock"] = lock
+    return lock
+
+
 def previous_month_start(now: datetime) -> datetime:
     if now.month == 1:
         return now.replace(year=now.year - 1, month=12, day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -68,24 +86,70 @@ def parse_notify_time(value) -> tuple[int, int]:
         return int(default[0]), int(default[1])
 
 
+def _clean_topics(topics) -> list[str]:
+    """Keep only topic names ntfy accepts: [-_A-Za-z0-9], up to 64 characters."""
+    if isinstance(topics, str):
+        topics = [topics]
+
+    cleaned: list[str] = []
+    for topic in topics or []:
+        name = _INVALID_TOPIC_CHARS.sub("-", str(topic).strip())[:_TOPIC_NAME_LIMIT]
+        if not name or not re.search(r"[A-Za-z0-9_]", name):
+            _LOGGER.warning(
+                "Skipping invalid ntfy topic %r: use only letters, numbers, "
+                "underscores and dashes",
+                topic,
+            )
+            continue
+        if name != str(topic):
+            _LOGGER.warning("Adjusted ntfy topic %r to %r", topic, name)
+        if name not in cleaned:
+            cleaned.append(name)
+    return cleaned
+
+
+def _ascii_header(value: str) -> str:
+    """HTTP headers only carry latin-1, so keep them ASCII and single line."""
+    cleaned = " ".join(value.encode("ascii", "ignore").decode("ascii").split())
+    if not re.search(r"[A-Za-z0-9]", cleaned):
+        return "Energy cost report"
+    return cleaned
+
+
+def _headers(title: str, files: dict) -> dict:
+    headers = {"Title": _ascii_header(title), "Tags": "money"}
+    actions = []
+    primary = None
+    for key, label in (("pdf", "Open PDF report"), ("csv", "Open CSV report")):
+        info = files.get(key) or {}
+        if not info.get("is_absolute"):
+            continue
+        if primary is None:
+            primary = info["absolute_url"]
+        actions.append(f"view, {label}, {info['absolute_url']}, clear=true")
+    if primary is not None:
+        headers["Click"] = primary
+    if actions:
+        headers["Actions"] = "; ".join(actions)
+    return headers
+
+
 async def async_send_ntfy(
     hass: HomeAssistant,
     server: str,
     topics: list[str],
     title: str,
     message: str,
-    click_url: str | None = None,
+    files: dict | None = None,
     verify_ssl: bool = True,
 ) -> bool:
     session = async_get_clientsession(hass)
     base = (server or DEFAULT_NOTIFY_SERVER).rstrip("/")
+    headers = _headers(title, files or {})
     all_ok = True
 
     for topic in topics:
         url = f"{base}/{topic}"
-        headers = {"Title": title, "Tags": "money"}
-        if click_url:
-            headers["Actions"] = f"view, Open report, {click_url}, clear=true"
         try:
             async with asyncio.timeout(30):
                 resp = await session.post(
@@ -102,44 +166,82 @@ async def async_send_ntfy(
     return all_ok
 
 
+async def _record_notify(
+    hass: HomeAssistant,
+    entry,
+    last_export,
+    entry_state: dict,
+    ok: bool,
+    error: str | None,
+    month_key: str | None,
+    mark_notified: bool,
+) -> bool:
+    if error and entry_state.get("last_notify_error") != error:
+        _LOGGER.error("%s: %s", entry.title, error)
+    entry_state["last_notify_error"] = error
+
+    if last_export is not None:
+        last_export.apply_notify_result(
+            {
+                "ok": ok,
+                "error": error,
+                "month_key": month_key,
+                "attempt": dt_util.now().isoformat(),
+            }
+        )
+
+    if ok and mark_notified and month_key:
+        await _mark_notified(hass, entry.entry_id, month_key)
+
+    return ok
+
+
 async def async_run_monthly_notify(
     hass: HomeAssistant, entry, mark_notified: bool = False
-) -> None:
+) -> bool:
+    """Export the previous month and push it to ntfy. Returns delivery success."""
     entry_id = entry.entry_id
+    entry_data = hass.data.setdefault(DOMAIN, {}).setdefault(entry_id, {})
+    last_export = entry_data.get("last_export")
+
+    topics = _clean_topics(_option(entry, CONF_NOTIFY_TOPICS, []))
+    if not topics:
+        return await _record_notify(
+            hass,
+            entry,
+            last_export,
+            entry_data,
+            False,
+            "no valid ntfy topics configured",
+            None,
+            mark_notified,
+        )
+
     energy_sensor_id = entry.data[CONF_ENERGY_SENSOR]
     price_sensor_id = entry.data[CONF_PRICE_SENSOR]
-    fixed_addition = entry.options.get(
-        CONF_FIXED_ADDITION, entry.data.get(CONF_FIXED_ADDITION, 0.0)
-    )
+    fixed_addition = _option(entry, CONF_FIXED_ADDITION, 0.0)
+    server = _option(entry, CONF_NOTIFY_SERVER, DEFAULT_NOTIFY_SERVER)
+    verify_ssl = _option(entry, CONF_NOTIFY_VERIFY_SSL, True)
 
-    topics = entry.options.get(CONF_NOTIFY_TOPICS, entry.data.get(CONF_NOTIFY_TOPICS, []))
-    if not topics:
-        _LOGGER.info("Notify enabled but no ntfy topics configured; skipping")
-        return
-    server = entry.options.get(
-        CONF_NOTIFY_SERVER, entry.data.get(CONF_NOTIFY_SERVER, DEFAULT_NOTIFY_SERVER)
-    )
-    verify_ssl = entry.options.get(
-        CONF_NOTIFY_VERIFY_SSL, entry.data.get(CONF_NOTIFY_VERIFY_SSL, True)
-    )
-
-    now = dt_util.now()
-    month_start = previous_month_start(now)
-
+    month_start = previous_month_start(dt_util.now())
     summary = await export.compute_month_summary(
         hass, entry_id, energy_sensor_id, price_sensor_id, fixed_addition, month_start
     )
     files = await export.write_month_files(hass, summary, "both")
+    await export.record_export_files(hass, entry_id, summary["month_key"], files)
 
-    last_export = hass.data.get(DOMAIN, {}).get(entry_id, {}).get("last_export")
     if last_export is not None:
-        last_export.apply_export_result({"summary": summary, "files": files})
+        await last_export.apply_export_result({"summary": summary, "files": files})
 
-    urls = {f: info["absolute_url"] for f, info in files.items()}
-    pdf_url = urls.get("pdf")
-    csv_url = urls.get("csv")
+    url_warning = export.missing_url_warning(hass)
+    if url_warning:
+        _LOGGER.warning("%s: %s", summary["month_key"], url_warning)
+
     cur = summary["currency"]
-    title = f"{summary['device_name']} energy cost {summary['month_key']}: {summary['total_cost']} {cur}"
+    title = (
+        f"{summary['device_name']} energy cost {summary['month_key']}: "
+        f"{summary['total_cost']} {cur}"
+    )
     lines = []
     if summary.get("energy_consumed_kwh") is not None:
         lines.append(f"Consumption: {summary['energy_consumed_kwh']} kWh")
@@ -152,28 +254,32 @@ async def async_run_monthly_notify(
         lines.append("Warning: spot/fixed cost split could not be recovered")
     if not summary.get("complete", False):
         lines.append("Warning: data coverage for this report is incomplete")
-    if pdf_url:
-        lines.append(f"Report (PDF): {pdf_url}")
-    if csv_url:
-        lines.append(f"Report (CSV): {csv_url}")
+    if url_warning:
+        lines.append(f"Warning: {url_warning}")
+    for fmt, label in (("pdf", "Report (PDF)"), ("csv", "Report (CSV)")):
+        info = files.get(fmt)
+        if info:
+            lines.append(f"{label}: {info['absolute_url']}")
     message = "\n".join(lines)
 
-    ok = await async_send_ntfy(
-        hass, server, list(topics), title, message, pdf_url, verify_ssl
-    )
-    if not ok:
-        await hass.services.async_call(
-            "persistent_notification",
-            "create",
-            {
-                "title": title,
-                "message": message + "\n\n(ntfy delivery failed; see logs)",
-            },
-            blocking=False,
+    ok = await async_send_ntfy(hass, server, topics, title, message, files, verify_ssl)
+
+    if not ok and mark_notified:
+        _LOGGER.warning(
+            "Report for %s was not delivered and will be retried",
+            summary["month_key"],
         )
 
-    if mark_notified:
-        await _mark_notified(hass, entry_id, summary["month_key"])
+    return await _record_notify(
+        hass,
+        entry,
+        last_export,
+        entry_data,
+        ok,
+        None if ok else "ntfy delivery failed, see the log for details",
+        summary["month_key"],
+        mark_notified,
+    )
 
 
 async def async_send_test_notification(hass: HomeAssistant, entry) -> None:
@@ -181,26 +287,30 @@ async def async_send_test_notification(hass: HomeAssistant, entry) -> None:
     await async_run_monthly_notify(hass, entry, mark_notified=False)
 
 
-async def async_catch_up_if_needed(hass: HomeAssistant, entry) -> None:
-    enabled = entry.options.get(
-        CONF_NOTIFY_ENABLED, entry.data.get(CONF_NOTIFY_ENABLED, False)
-    )
-    if not enabled:
-        return
+async def async_check_and_notify(hass: HomeAssistant, entry) -> bool:
+    """Send last month's report if it has not been delivered yet.
 
-    now = dt_util.now()
-    if now.day != 1:
-        return
+    Runs on start-up and hourly, so a missed notification window is picked up as
+    soon as Home Assistant is back. The month is only marked as notified after a
+    confirmed delivery, which makes a failed send retry instead of being lost.
+    """
+    if not _option(entry, CONF_NOTIFY_ENABLED, False):
+        return False
 
     hour, minute = parse_notify_time(
-        entry.options.get(CONF_NOTIFY_TIME, entry.data.get(CONF_NOTIFY_TIME, DEFAULT_NOTIFY_TIME))
+        _option(entry, CONF_NOTIFY_TIME, DEFAULT_NOTIFY_TIME)
     )
+    now = dt_util.now()
     if (now.hour, now.minute) < (hour, minute):
-        return
+        return False
 
-    month_start = previous_month_start(now)
-    month_key = month_start.strftime(_MONTH_FMT)
-    if await _was_notified(hass, entry.entry_id, month_key):
-        return
+    month_key = previous_month_start(now).strftime(_MONTH_FMT)
 
-    await async_run_monthly_notify(hass, entry, mark_notified=True)
+    async with _notify_lock(hass, entry.entry_id):
+        if await _was_notified(hass, entry.entry_id, month_key):
+            return False
+
+        _LOGGER.debug(
+            "Monthly report for %s is still undelivered, sending now", month_key
+        )
+        return await async_run_monthly_notify(hass, entry, mark_notified=True)

@@ -66,7 +66,7 @@ class ExportMonthButton(ButtonEntity):
 
         last_export = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id, {}).get("last_export")
         if last_export is not None:
-            last_export.apply_export_result(result)
+            await last_export.apply_export_result(result)
 
 
 class ResetCostButton(ButtonEntity):

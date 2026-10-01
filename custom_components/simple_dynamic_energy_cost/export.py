@@ -22,6 +22,8 @@ _MONTH_FMT = "%Y-%m"
 _COVERAGE_TOLERANCE = timedelta(hours=36)
 _PRICE_LOOKBACK = timedelta(days=7)
 
+REPORT_HISTORY_MONTHS = 24
+
 
 def _to_float(value) -> float | None:
     if value is None:
@@ -401,6 +403,48 @@ async def get_summary(
     return summaries.get(entry_id, {}).get(month_key)
 
 
+async def record_export_files(
+    hass: HomeAssistant, entry_id: str, month_key: str, files: dict
+) -> None:
+    """Store the written report URLs on an existing month summary."""
+    data = await _store(hass).async_load() or {}
+    if not isinstance(data, dict):
+        data = {}
+    entry_summaries = data.setdefault(MONTHLY_SUMMARIES_KEY, {}).setdefault(
+        entry_id, {}
+    )
+    summary = entry_summaries.get(month_key) or {"month_key": month_key}
+    summary["files"] = files
+    entry_summaries[month_key] = summary
+    await _store(hass).async_save(data)
+
+
+async def load_reports(hass: HomeAssistant, entry_id: str) -> dict:
+    """Per-month report links and figures, oldest month first."""
+    summaries = await load_summaries(hass)
+    entry_summaries = summaries.get(entry_id, {})
+    reports = {}
+    for month_key in sorted(entry_summaries)[-REPORT_HISTORY_MONTHS:]:
+        summary = entry_summaries[month_key]
+        files = summary.get("files") or {}
+        pdf = files.get("pdf") or {}
+        csv = files.get("csv") or {}
+        reports[month_key] = {
+            "pdf": pdf.get("absolute_url"),
+            "csv": csv.get("absolute_url"),
+            "total_cost": summary.get("total_cost"),
+            "currency": summary.get("currency"),
+            "energy_consumed_kwh": summary.get("energy_consumed_kwh"),
+            "spot_cost": summary.get("spot_cost"),
+            "fixed_cost": summary.get("fixed_cost"),
+            "complete": bool(summary.get("complete", False)),
+            "split_recovered": summary.get("split_recovered", True),
+            "data_from": summary.get("data_from"),
+            "data_to": summary.get("data_to"),
+        }
+    return reports
+
+
 async def compute_month_summary(
     hass: HomeAssistant,
     entry_id: str,
@@ -558,7 +602,7 @@ def _pdf_bytes(summary: dict) -> bytes:
     return bytes(out)
 
 
-def _write_file(hass: HomeAssistant, filename: str, content: bytes) -> str:
+def write_www_file(hass: HomeAssistant, filename: str, content: bytes) -> str:
     www_dir = hass.config.path("www")
     os.makedirs(www_dir, exist_ok=True)
     path = os.path.join(www_dir, filename)
@@ -567,11 +611,29 @@ def _write_file(hass: HomeAssistant, filename: str, content: bytes) -> str:
     return f"/local/{filename}"
 
 
-def _public_url(hass: HomeAssistant, relative: str) -> str:
+def www_file_exists(hass: HomeAssistant, filename: str, content: bytes) -> bool:
+    path = os.path.join(hass.config.path("www"), filename)
+    try:
+        with open(path, "rb") as fh:
+            return fh.read() == content
+    except OSError:
+        return False
+
+
+def public_base_url(hass: HomeAssistant) -> str:
+    """Base URL reachable from outside HA, or "" when neither is configured."""
     base = hass.config.external_url or hass.config.internal_url or ""
-    if base.endswith("/"):
-        base = base[:-1]
-    return f"{base}{relative}" if base else relative
+    return base[:-1] if base.endswith("/") else base
+
+
+def missing_url_warning(hass: HomeAssistant) -> str | None:
+    if public_base_url(hass):
+        return None
+    return (
+        "No external or internal URL is configured in Home Assistant, so the "
+        "report links are relative and will not open from your phone. Set an "
+        "external URL under Settings -> System -> Network."
+    )
 
 
 async def write_month_files(
@@ -582,6 +644,7 @@ async def write_month_files(
 
     results = {}
     formats = [fmt] if fmt == "csv" or fmt == "pdf" else ["csv", "pdf"]
+    base_url = public_base_url(hass)
     for f in formats:
         if f == "csv":
             content = _csv_bytes(summary)
@@ -590,12 +653,15 @@ async def write_month_files(
             content = _pdf_bytes(summary)
             ext = "pdf"
         filename = f"{base}.{ext}"
-        rel = await hass.async_add_executor_job(_write_file, hass, filename, content)
+        rel = await hass.async_add_executor_job(
+            write_www_file, hass, filename, content
+        )
         version = hashlib.md5(content).hexdigest()[:8]
         cache_busted = f"{rel}?v={version}"
         results[f] = {
             "relative_url": cache_busted,
-            "absolute_url": _public_url(hass, cache_busted),
+            "absolute_url": f"{base_url}{cache_busted}" if base_url else cache_busted,
+            "is_absolute": bool(base_url),
         }
 
     return results
@@ -616,4 +682,5 @@ async def export_month(
     )
 
     files = await write_month_files(hass, summary, fmt)
+    await record_export_files(hass, entry_id, summary["month_key"], files)
     return {"summary": summary, "files": files}

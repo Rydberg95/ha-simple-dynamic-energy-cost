@@ -20,9 +20,22 @@ from .const import (
     SERVICE_SEND_TEST_NOTIFICATION,
     ATTR_START_DATE,
 )
-from . import export, notify
+from . import card, export, notify
 
 _LOGGER = logging.getLogger(__name__)
+
+_RESERVED_STATE_ATTRIBUTES = frozenset(
+    {
+        "attribution",
+        "device_class",
+        "entity_picture",
+        "friendly_name",
+        "icon",
+        "state_class",
+        "supported_features",
+        "unit_of_measurement",
+    }
+)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     """Set up the sensor platform."""
@@ -451,7 +464,7 @@ class LastExportSensor(RestoreSensor):
         source_name = energy_sensor_id.split(".")[-1].replace("_", " ").title()
         self._attr_name = f"{source_name} Last Export"
         self._attr_unique_id = f"{entry_id}_{energy_sensor_id.replace('.', '_')}_last_export"
-        self._attr_extra_state_attributes = {}
+        self._attr_extra_state_attributes = {"card_url": card.CARD_URL}
 
     def bind(self, price_sensor_id: str, fixed_addition: float) -> None:
         self._price_sensor_id = price_sensor_id
@@ -464,13 +477,6 @@ class LastExportSensor(RestoreSensor):
     @property
     def native_unit_of_measurement(self):
         return self.hass.config.currency
-
-    async def async_added_to_hass(self):
-        await super().async_added_to_hass()
-        state = await self.async_get_last_sensor_data()
-        if state and state.native_value is not None:
-            self._attr_extra_state_attributes["total_cost"] = float(state.native_value)
-            self.async_write_ha_state()
 
     async def async_export_month(self, **kwargs) -> None:
         """Service handler: export a month report to CSV/PDF in www/."""
@@ -485,7 +491,7 @@ class LastExportSensor(RestoreSensor):
             start_date,
             fmt,
         )
-        self.apply_export_result(result)
+        await self.apply_export_result(result)
 
     async def async_send_test_notification(self, **kwargs) -> None:
         """Service handler: send the latest monthly export notification now."""
@@ -494,10 +500,48 @@ class LastExportSensor(RestoreSensor):
             return
         await notify.async_send_test_notification(self.hass, entry)
 
-    def apply_export_result(self, result: dict) -> None:
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+
+        last_state = await self.async_get_last_state()
+        if last_state is not None:
+            restored = {
+                key: value
+                for key, value in last_state.attributes.items()
+                if key not in _RESERVED_STATE_ATTRIBUTES
+            }
+            if restored:
+                self._attr_extra_state_attributes = restored
+
+        if "total_cost" not in self._attr_extra_state_attributes:
+            state = await self.async_get_last_sensor_data()
+            if state and state.native_value is not None:
+                self._attr_extra_state_attributes["total_cost"] = float(state.native_value)
+
+        self._attr_extra_state_attributes["card_url"] = card.CARD_URL
+        await self._refresh_reports()
+        await card.write_card(self.hass, getattr(self, "entity_id", None))
+        self.async_write_ha_state()
+
+    async def _refresh_reports(self) -> None:
+        reports = await export.load_reports(self.hass, self._entry_id)
+        if not reports:
+            return
+        self._attr_extra_state_attributes["reports"] = reports
+        self._attr_extra_state_attributes["available_months"] = sorted(
+            reports, reverse=True
+        )
+
+    async def apply_export_result(self, result: dict) -> None:
         """Update sensor state/attributes from an export result."""
         summary = result["summary"]
         files = result["files"]
+
+        await export.record_export_files(
+            self.hass, self._entry_id, summary["month_key"], files
+        )
+        await self._refresh_reports()
+
         attrs = dict(self._attr_extra_state_attributes)
         attrs["month_key"] = summary["month_key"]
         attrs["period"] = f"{summary['period_start']} till {summary['period_end']}"
@@ -513,9 +557,84 @@ class LastExportSensor(RestoreSensor):
             attrs["data_from"] = summary["data_from"]
         if summary.get("data_to"):
             attrs["data_to"] = summary["data_to"]
-        urls = {}
-        for f, info in files.items():
-            urls[f] = info["absolute_url"]
-        attrs["files"] = urls
+        attrs["files"] = {f: info["absolute_url"] for f, info in files.items()}
+        attrs["links_public"] = all(
+            info.get("is_absolute", False) for info in files.values()
+        )
+        attrs["card_url"] = card.CARD_URL
         self._attr_extra_state_attributes = attrs
         self.async_write_ha_state()
+
+        await card.write_card(self.hass, getattr(self, "entity_id", None))
+        self.hass.async_create_task(self._async_notify_export(summary, files))
+
+    async def _async_notify_export(self, summary: dict, files: dict) -> None:
+        lines = []
+        for fmt, label in (("pdf", "PDF report"), ("csv", "CSV report")):
+            info = files.get(fmt)
+            if info:
+                lines.append(f"- [{label}]({info['absolute_url']})")
+
+        if summary.get("split_recovered") is False:
+            lines.append("_The split between spot price and grid fee could not be recovered._")
+        if not summary.get("complete", False):
+            lines.append("_The data coverage for this report is incomplete._")
+        if not all(info.get("is_absolute", False) for info in files.values()):
+            lines.append(
+                "_These links are relative and will not open outside Home "
+                "Assistant. Set an external URL under Settings -> System -> Network._"
+            )
+
+        await self.hass.services.async_call(
+            "persistent_notification",
+            "create",
+            {
+                "title": (
+                    f"{summary['device_name']} {summary['month_key']}: "
+                    f"{summary['total_cost']} {summary['currency']}"
+                ),
+                "message": "\n".join(lines),
+                "notification_id": f"{DOMAIN}_{self._entry_id}_export",
+            },
+            blocking=False,
+        )
+
+    def apply_notify_result(self, result: dict) -> None:
+        """Record the outcome of an ntfy push on the sensor."""
+        attrs = dict(self._attr_extra_state_attributes)
+        attrs["notify_last_attempt"] = result.get("attempt")
+        attrs["notify_last_ok"] = bool(result.get("ok"))
+        attrs["notify_error"] = result.get("error")
+        self._attr_extra_state_attributes = attrs
+        self.async_write_ha_state()
+
+        if result.get("ok"):
+            self.hass.async_create_task(
+                self.hass.services.async_call(
+                    "persistent_notification",
+                    "dismiss",
+                    {"notification_id": f"{DOMAIN}_{self._entry_id}_notify"},
+                    blocking=False,
+                )
+            )
+            return
+
+        if not result.get("error"):
+            return
+
+        self.hass.async_create_task(
+            self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": f"{self._attr_name}: ntfy delivery failed",
+                    "message": (
+                        f"{result['error']}\n\nThe monthly report links are still "
+                        "available on this sensor and in the dashboard card. "
+                        "The notification is retried automatically."
+                    ),
+                    "notification_id": f"{DOMAIN}_{self._entry_id}_notify",
+                },
+                blocking=False,
+            )
+        )

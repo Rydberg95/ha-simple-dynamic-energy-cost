@@ -35,9 +35,9 @@
         "data_description": {
           "fixed_addition": "Update the fixed amount added to the price per kWh. Enter this value in the exact same currency as your price sensor.",
           "notify_enabled": "On the 1st of each month, the previous month's report is exported and its download links are pushed via ntfy.",
-          "notify_topics": "Type a topic name and press Enter for each device. In the ntfy app, subscribe each device to one of these topics. Use long, unguessable topic names — topics act as passwords.",
+          "notify_topics": "Type a topic name and press Enter for each device. In the ntfy app, subscribe each device to one of these topics. Use long, unguessable topic names — topics act as passwords. A topic name may only contain letters, numbers, underscores and dashes, and can be up to 64 characters.",
           "notify_server": "Leave as https://ntfy.sh unless you self-host ntfy.",
-          "notify_time": "Time of day on the 1st when the notification is sent (default 09:00).",
+          "notify_time": "Time of day on the 1st when the notification is sent (default 09:00). If Home Assistant is down or restarting at that time, the report is sent automatically as soon as Home Assistant is back.",
           "notify_verify_ssl": "Disable only if your self-hosted ntfy server uses a certificate Home Assistant doesn't trust."
         }
       }

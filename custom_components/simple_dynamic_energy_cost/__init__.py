@@ -32,20 +32,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
         @callback
-        def _monthly_notify(now):
-            if now.day != 1:
-                return
-            hass.async_create_task(
-                notify.async_run_monthly_notify(hass, entry, mark_notified=True)
-            )
+        def _notify_check(now):
+            hass.async_create_task(notify.async_check_and_notify(hass, entry))
 
         entry.async_on_unload(
-            async_track_time_change(
-                hass, _monthly_notify, hour=hour, minute=minute, second=0
-            )
+            async_track_time_change(hass, _notify_check, hour=hour, minute=minute, second=0)
+        )
+        entry.async_on_unload(
+            async_track_time_change(hass, _notify_check, minute=0, second=0)
         )
 
-        hass.async_create_task(notify.async_catch_up_if_needed(hass, entry))
+        hass.async_create_task(notify.async_check_and_notify(hass, entry))
 
     return True
 
