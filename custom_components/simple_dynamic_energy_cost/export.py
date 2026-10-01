@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import hashlib
 import io
@@ -262,6 +263,21 @@ def _store(hass: HomeAssistant) -> storage.Store:
     return storage.Store(hass, STORAGE_VERSION, STORAGE_KEY)
 
 
+_STORE_LOCK: asyncio.Lock | None = None
+
+
+def _store_lock() -> asyncio.Lock:
+    """Serialise read-modify-write on the summaries store.
+
+    Each call builds a fresh storage.Store, so the cache is not shared between
+    writers and concurrent saves would lose updates.
+    """
+    global _STORE_LOCK
+    if _STORE_LOCK is None:
+        _STORE_LOCK = asyncio.Lock()
+    return _STORE_LOCK
+
+
 async def _stats_energy(
     hass: HomeAssistant,
     energy_sensor_id: str,
@@ -387,13 +403,18 @@ async def load_summaries(hass: HomeAssistant) -> dict:
 
 
 async def save_summary(hass: HomeAssistant, entry_id: str, summary: dict) -> None:
-    data = await _store(hass).async_load() or {}
-    if not isinstance(data, dict):
-        data = {}
-    summaries = data.setdefault(MONTHLY_SUMMARIES_KEY, {})
-    entry_summaries = summaries.setdefault(entry_id, {})
-    entry_summaries[summary["month_key"]] = summary
-    await _store(hass).async_save(data)
+    async with _store_lock():
+        data = await _store(hass).async_load() or {}
+        if not isinstance(data, dict):
+            data = {}
+        summaries = data.setdefault(MONTHLY_SUMMARIES_KEY, {})
+        entry_summaries = summaries.setdefault(entry_id, {})
+        stored = dict(summary)
+        existing_files = (entry_summaries.get(summary["month_key"]) or {}).get("files")
+        if existing_files and not stored.get("files"):
+            stored["files"] = existing_files
+        entry_summaries[summary["month_key"]] = stored
+        await _store(hass).async_save(data)
 
 
 async def get_summary(
@@ -407,16 +428,19 @@ async def record_export_files(
     hass: HomeAssistant, entry_id: str, month_key: str, files: dict
 ) -> None:
     """Store the written report URLs on an existing month summary."""
-    data = await _store(hass).async_load() or {}
-    if not isinstance(data, dict):
-        data = {}
-    entry_summaries = data.setdefault(MONTHLY_SUMMARIES_KEY, {}).setdefault(
-        entry_id, {}
-    )
-    summary = entry_summaries.get(month_key) or {"month_key": month_key}
-    summary["files"] = files
-    entry_summaries[month_key] = summary
-    await _store(hass).async_save(data)
+    async with _store_lock():
+        data = await _store(hass).async_load() or {}
+        if not isinstance(data, dict):
+            data = {}
+        entry_summaries = data.setdefault(MONTHLY_SUMMARIES_KEY, {}).setdefault(
+            entry_id, {}
+        )
+        summary = dict(entry_summaries.get(month_key) or {"month_key": month_key})
+        stored = dict(summary.get("files") or {})
+        stored.update(files)
+        summary["files"] = stored
+        entry_summaries[month_key] = summary
+        await _store(hass).async_save(data)
 
 
 async def load_reports(hass: HomeAssistant, entry_id: str) -> dict:
@@ -605,9 +629,11 @@ def _pdf_bytes(summary: dict) -> bytes:
 def write_www_file(hass: HomeAssistant, filename: str, content: bytes) -> str:
     www_dir = hass.config.path("www")
     os.makedirs(www_dir, exist_ok=True)
-    path = os.path.join(www_dir, filename)
-    with open(path, "wb") as fh:
+    final = os.path.join(www_dir, filename)
+    tmp = f"{final}.{os.getpid()}.tmp"
+    with open(tmp, "wb") as fh:
         fh.write(content)
+    os.replace(tmp, final)
     return f"/local/{filename}"
 
 
@@ -682,5 +708,4 @@ async def export_month(
     )
 
     files = await write_month_files(hass, summary, fmt)
-    await record_export_files(hass, entry_id, summary["month_key"], files)
     return {"summary": summary, "files": files}

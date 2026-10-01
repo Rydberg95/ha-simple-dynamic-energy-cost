@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import storage
@@ -32,6 +32,9 @@ _MONTH_FMT = "%Y-%m"
 
 _INVALID_TOPIC_CHARS = re.compile(r"[^A-Za-z0-9_-]")
 _TOPIC_NAME_LIMIT = 64
+_HEADER_VALUE_LIMIT = 200
+_BASE_RETRY_DELAY = timedelta(hours=1)
+_MAX_RETRY_DELAY = timedelta(hours=6)
 
 
 def _store(hass: HomeAssistant) -> storage.Store:
@@ -52,7 +55,42 @@ async def _mark_notified(hass: HomeAssistant, entry_id: str, month_key: str) -> 
     data = await _load_state(hass)
     entry_state = data.setdefault(entry_id, {})
     entry_state["notified_month"] = month_key
+    entry_state["attempts"] = 0
+    entry_state.pop("last_attempt", None)
+    entry_state.pop("attempt_month", None)
     await _store(hass).async_save(data)
+
+
+async def _record_failed_attempt(
+    hass: HomeAssistant, entry_id: str, month_key: str
+) -> None:
+    data = await _load_state(hass)
+    entry_state = data.setdefault(entry_id, {})
+    if entry_state.get("attempt_month") == month_key:
+        attempts = int(entry_state.get("attempts", 0)) + 1
+    else:
+        attempts = 1
+    entry_state["attempt_month"] = month_key
+    entry_state["attempts"] = attempts
+    entry_state["last_attempt"] = dt_util.now().isoformat()
+    await _store(hass).async_save(data)
+
+
+async def _retry_delay(hass: HomeAssistant, entry_id: str, month_key: str):
+    """Growing delay between failed attempts, so a broken setup is not retried all day."""
+    entry_state = (await _load_state(hass)).get(entry_id, {}) or {}
+    if entry_state.get("attempt_month") != month_key:
+        return None
+    attempts = int(entry_state.get("attempts", 0))
+    if not attempts:
+        return None
+    last_attempt = entry_state.get("last_attempt")
+    if not last_attempt:
+        return None
+    parsed = dt_util.parse_datetime(last_attempt)
+    if parsed is None:
+        return None
+    return parsed + min(_MAX_RETRY_DELAY, _BASE_RETRY_DELAY * (2 ** (attempts - 1)))
 
 
 def _option(entry, key, default=None):
@@ -108,16 +146,14 @@ def _clean_topics(topics) -> list[str]:
     return cleaned
 
 
-def _ascii_header(value: str) -> str:
-    """HTTP headers only carry latin-1, so keep them ASCII and single line."""
-    cleaned = " ".join(value.encode("ascii", "ignore").decode("ascii").split())
-    if not re.search(r"[A-Za-z0-9]", cleaned):
-        return "Energy cost report"
-    return cleaned
+def _header_value(value: str) -> str:
+    """Header values must stay single line and free of control characters."""
+    printable = "".join(ch for ch in str(value) if ch.isprintable())
+    return " ".join(printable.split())[:_HEADER_VALUE_LIMIT]
 
 
 def _headers(title: str, files: dict) -> dict:
-    headers = {"Title": _ascii_header(title), "Tags": "money"}
+    headers = {"Title": _header_value(title), "Tags": "money"}
     actions = []
     primary = None
     for key, label in (("pdf", "Open PDF report"), ("csv", "Open CSV report")):
@@ -192,6 +228,8 @@ async def _record_notify(
 
     if ok and mark_notified and month_key:
         await _mark_notified(hass, entry.entry_id, month_key)
+    elif mark_notified and month_key:
+        await _record_failed_attempt(hass, entry.entry_id, month_key)
 
     return ok
 
@@ -204,19 +242,6 @@ async def async_run_monthly_notify(
     entry_data = hass.data.setdefault(DOMAIN, {}).setdefault(entry_id, {})
     last_export = entry_data.get("last_export")
 
-    topics = _clean_topics(_option(entry, CONF_NOTIFY_TOPICS, []))
-    if not topics:
-        return await _record_notify(
-            hass,
-            entry,
-            last_export,
-            entry_data,
-            False,
-            "no valid ntfy topics configured",
-            None,
-            mark_notified,
-        )
-
     energy_sensor_id = entry.data[CONF_ENERGY_SENSOR]
     price_sensor_id = entry.data[CONF_PRICE_SENSOR]
     fixed_addition = _option(entry, CONF_FIXED_ADDITION, 0.0)
@@ -228,10 +253,11 @@ async def async_run_monthly_notify(
         hass, entry_id, energy_sensor_id, price_sensor_id, fixed_addition, month_start
     )
     files = await export.write_month_files(hass, summary, "both")
-    await export.record_export_files(hass, entry_id, summary["month_key"], files)
 
     if last_export is not None:
         await last_export.apply_export_result({"summary": summary, "files": files})
+    else:
+        await export.record_export_files(hass, entry_id, summary["month_key"], files)
 
     url_warning = export.missing_url_warning(hass)
     if url_warning:
@@ -262,6 +288,22 @@ async def async_run_monthly_notify(
             lines.append(f"{label}: {info['absolute_url']}")
     message = "\n".join(lines)
 
+    topics = _clean_topics(_option(entry, CONF_NOTIFY_TOPICS, []))
+    if not topics:
+        _LOGGER.warning(
+            "No valid ntfy topics configured; the report was exported but not pushed"
+        )
+        return await _record_notify(
+            hass,
+            entry,
+            last_export,
+            entry_data,
+            False,
+            "no valid ntfy topics configured",
+            summary["month_key"],
+            mark_notified,
+        )
+
     ok = await async_send_ntfy(hass, server, topics, title, message, files, verify_ssl)
 
     if not ok and mark_notified:
@@ -282,9 +324,9 @@ async def async_run_monthly_notify(
     )
 
 
-async def async_send_test_notification(hass: HomeAssistant, entry) -> None:
+async def async_send_test_notification(hass: HomeAssistant, entry) -> bool:
     """Send the latest monthly export notification immediately, as if it were the 1st."""
-    await async_run_monthly_notify(hass, entry, mark_notified=False)
+    return await async_run_monthly_notify(hass, entry, mark_notified=False)
 
 
 async def async_check_and_notify(hass: HomeAssistant, entry) -> bool:
@@ -308,6 +350,15 @@ async def async_check_and_notify(hass: HomeAssistant, entry) -> bool:
 
     async with _notify_lock(hass, entry.entry_id):
         if await _was_notified(hass, entry.entry_id, month_key):
+            return False
+
+        retry_at = await _retry_delay(hass, entry.entry_id, month_key)
+        if retry_at is not None and now < retry_at:
+            _LOGGER.debug(
+                "Monthly report for %s not due for a retry until %s",
+                month_key,
+                retry_at,
+            )
             return False
 
         _LOGGER.debug(

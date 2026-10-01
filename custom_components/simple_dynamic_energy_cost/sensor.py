@@ -66,7 +66,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     sensors = list(cost_sensors.values())
 
-    last_export = LastExportSensor(hass, entry.entry_id, energy_sensor_id)
+    last_export = LastExportSensor(hass, entry, energy_sensor_id)
     last_export.bind(price_sensor_id, fixed_addition)
     sensors.append(last_export)
 
@@ -454,17 +454,24 @@ class LastExportSensor(RestoreSensor):
     _attr_icon = "mdi:file-download"
     _attr_should_poll = False
 
-    def __init__(self, hass, entry_id, energy_sensor_id):
+    def __init__(self, hass, entry, energy_sensor_id):
         self.hass = hass
-        self._entry_id = entry_id
+        self._entry = entry
+        self._entry_id = entry.entry_id
         self._energy_sensor_id = energy_sensor_id
         self._price_sensor_id = None
         self._fixed_addition = 0.0
 
         source_name = energy_sensor_id.split(".")[-1].replace("_", " ").title()
         self._attr_name = f"{source_name} Last Export"
-        self._attr_unique_id = f"{entry_id}_{energy_sensor_id.replace('.', '_')}_last_export"
-        self._attr_extra_state_attributes = {"card_url": card.CARD_URL}
+        self._attr_unique_id = f"{self._entry_id}_{energy_sensor_id.replace('.', '_')}_last_export"
+        self._attr_extra_state_attributes = {"card_url": card.card_url(hass, self._entry_id)}
+
+    def _create_task(self, coro):
+        creator = getattr(self._entry, "async_create_task", None)
+        if creator is not None:
+            return creator(coro)
+        return self.hass.async_create_task(coro)
 
     def bind(self, price_sensor_id: str, fixed_addition: float) -> None:
         self._price_sensor_id = price_sensor_id
@@ -495,7 +502,7 @@ class LastExportSensor(RestoreSensor):
 
     async def async_send_test_notification(self, **kwargs) -> None:
         """Service handler: send the latest monthly export notification now."""
-        entry = self.hass.data[DOMAIN][self._entry_id].get("entry")
+        entry = self._entry
         if entry is None:
             return
         await notify.async_send_test_notification(self.hass, entry)
@@ -518,9 +525,13 @@ class LastExportSensor(RestoreSensor):
             if state and state.native_value is not None:
                 self._attr_extra_state_attributes["total_cost"] = float(state.native_value)
 
-        self._attr_extra_state_attributes["card_url"] = card.CARD_URL
+        self._attr_extra_state_attributes["card_url"] = card.card_url(
+            self.hass, self._entry_id
+        )
         await self._refresh_reports()
-        await card.write_card(self.hass, getattr(self, "entity_id", None))
+        await card.write_card(
+            self.hass, self._entry_id, getattr(self, "entity_id", None)
+        )
         self.async_write_ha_state()
 
     async def _refresh_reports(self) -> None:
@@ -557,16 +568,20 @@ class LastExportSensor(RestoreSensor):
             attrs["data_from"] = summary["data_from"]
         if summary.get("data_to"):
             attrs["data_to"] = summary["data_to"]
-        attrs["files"] = {f: info["absolute_url"] for f, info in files.items()}
+        urls = dict(self._attr_extra_state_attributes.get("files") or {})
+        urls.update({f: info["absolute_url"] for f, info in files.items()})
+        attrs["files"] = urls
         attrs["links_public"] = all(
             info.get("is_absolute", False) for info in files.values()
         )
-        attrs["card_url"] = card.CARD_URL
+        attrs["card_url"] = card.card_url(self.hass, self._entry_id)
         self._attr_extra_state_attributes = attrs
         self.async_write_ha_state()
 
-        await card.write_card(self.hass, getattr(self, "entity_id", None))
-        self.hass.async_create_task(self._async_notify_export(summary, files))
+        await card.write_card(
+            self.hass, self._entry_id, getattr(self, "entity_id", None)
+        )
+        self._create_task(self._async_notify_export(summary, files))
 
     async def _async_notify_export(self, summary: dict, files: dict) -> None:
         lines = []
@@ -609,7 +624,7 @@ class LastExportSensor(RestoreSensor):
         self.async_write_ha_state()
 
         if result.get("ok"):
-            self.hass.async_create_task(
+            self._create_task(
                 self.hass.services.async_call(
                     "persistent_notification",
                     "dismiss",
@@ -622,7 +637,7 @@ class LastExportSensor(RestoreSensor):
         if not result.get("error"):
             return
 
-        self.hass.async_create_task(
+        self._create_task(
             self.hass.services.async_call(
                 "persistent_notification",
                 "create",
